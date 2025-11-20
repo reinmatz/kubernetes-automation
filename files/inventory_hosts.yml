@@ -1,0 +1,128 @@
+---
+# Kubernetes Cluster Inventory
+# Customize für deine Umgebung!
+
+all:
+  vars:
+    # ===== SYSTEM =====
+    ansible_user: debian
+    ansible_ssh_private_key_file: ~/.ssh/k8s_cluster
+    ansible_python_interpreter: /usr/bin/python3
+    
+    # ===== KUBERNETES =====
+    kubernetes_version: "1.28.0"
+    cluster_name: "k8s-cluster-prod"
+    cluster_domain: "cluster.local"
+    
+    # ===== NETWORK CONFIGURATION =====
+    pod_network_cidr: "10.244.0.0/16"        # Flannel CIDR
+    service_cidr: "10.96.0.0/12"             # Service CIDR
+    api_server_endpoint: "192.168.100.100:6443"  # Load Balancer VIP or CP1
+    
+    # ===== LOAD BALANCER =====
+    metallb_ip_range: "192.168.100.200-192.168.100.210"
+    lb_type: "internal"  # internal, external, or none
+    
+    # ===== STORAGE =====
+    local_path_provisioner_path: "/opt/local-path-provisioner"
+    storage_class_name: "local-path"
+    
+    # ===== EXTENSIONS =====
+    helm_enabled: true
+    prometheus_enabled: true
+    grafana_enabled: true
+    loki_enabled: true
+    metallb_enabled: true
+    nginx_ingress_enabled: true
+    cert_manager_enabled: true
+    flux_enabled: false  # Nur wenn GitHub Repo verfügbar
+    
+    # ===== MONITORING =====
+    prometheus_retention: "30d"
+    prometheus_scrape_interval: "30s"
+    prometheus_evaluation_interval: "30s"
+    
+    # ===== GRAFANA =====
+    grafana_admin_password: "ChangeMe123!"  # CHANGE IN PRODUCTION!
+    grafana_admin_user: admin
+    
+    # ===== LOKI =====
+    loki_retention: "7d"
+    
+    # ===== CERT-MANAGER =====
+    cert_manager_email: "admin@cluster.local"
+    cert_manager_enabled: true
+    
+    # ===== FLUX (GitOps) =====
+    flux_namespace: "flux-system"
+    github_user: "YOUR_GITHUB_USER"        # CUSTOMIZE!
+    github_repo: "k8s-cluster-config"      # CUSTOMIZE!
+    # github_token: "ghp_xxxxxxxxxxxx"      # Setze als Environment Variable!
+    
+    # ===== TIMEOUT & RETRY =====
+    ansible_connection_timeout: 30
+    ansible_command_timeout: 30
+    ansible_async_dir: ~/.ansible_async
+
+  children:
+    # ===== CONTROL PLANES =====
+    control_planes:
+      hosts:
+        k8s-cp1:
+          ansible_host: 192.168.100.10
+          node_ip: 192.168.100.10
+          node_hostname: k8s-cp1
+          is_first_cp: true
+          
+        k8s-cp2:
+          ansible_host: 192.168.100.11
+          node_ip: 192.168.100.11
+          node_hostname: k8s-cp2
+          is_first_cp: false
+          
+        k8s-cp3:
+          ansible_host: 192.168.100.12
+          node_ip: 192.168.100.12
+          node_hostname: k8s-cp3
+          is_first_cp: false
+      
+      vars:
+        node_role: "control-plane"
+        node_type: "master"
+
+    # ===== WORKER NODES =====
+    workers:
+      hosts:
+        k8s-w1:
+          ansible_host: 192.168.100.20
+          node_ip: 192.168.100.20
+          node_hostname: k8s-w1
+          
+        k8s-w2:
+          ansible_host: 192.168.100.21
+          node_ip: 192.168.100.21
+          node_hostname: k8s-w2
+      
+      vars:
+        node_role: "worker"
+        node_type: "worker"
+        local_storage_enabled: true
+
+    # ===== MONITORING GROUP =====
+    monitoring:
+      children:
+        control_planes:
+      vars:
+        monitoring_enabled: true
+
+# ===== BEISPIEL FÜR STAGING ENVIRONMENT =====
+# Du kannst mehrere Inventories haben:
+# 
+# staging:
+#   hosts:
+#     k8s-cp1-stage:
+#       ansible_host: 192.168.200.10
+#     k8s-w1-stage:
+#       ansible_host: 192.168.200.20
+#
+# Dann mit: ansible-playbook -i inventory/staging.yml playbooks/site.yml

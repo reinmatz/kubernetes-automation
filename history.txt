@@ -1,0 +1,152 @@
+history
+    1  exit
+    2* 
+    3  kubectl completion bash | sudo tee /etc/bash_completion.d/kubectl
+    4  source /etc/bash_completion.d/kubectl 
+    5  pwd
+    6  ll
+    7  cd .kube/
+    8  ll
+    9  cat config 
+   10  cd ..
+   11  kubectl config 
+   12  kubectl config get-contexts 
+   13  kubectl config get-clusters
+   14  kubectl config get-users
+   15  kubectl api-resources 
+   16* kubectl api-resources --namespace=true
+   17  kubectl explain pod
+   18  kubectl api-resources
+   19  kubectl api-resources --namespacend=true
+   20  kubectl api-resources --namespaced=true
+   21  kubectl api-resources --namespaced=true | wc
+   22  kubectl explain pod
+   23  kubectl config get-contexts 
+   24  kubectl create namespace  rma-myfirst
+   25  kubectl get namespaces 
+   26  history 
+   27  kubectl config set-context docker-desktop --namespace rma-myfirst 
+   28  kubectl config get-contexts 
+   29  kubectl run myhttpd --image quay.io/jfreygner/myhttpd:0.20
+   30  kubectl get pods 
+   31  kubectl get all
+   32  history 
+   33  kubectl exec -it myhttpd -- bash
+   34  kubectl get pods 
+   35  kubectl exec -it myhttpd -- bash kill 1
+   36  kubectl get pods 
+   37  kubectl exec -it myhttpd -- bash 
+   38  kubectl get pods 
+   39  kubectl delete pod myhttpd 
+   40  kubectl get all
+   41  kubectl create deployment myhttpd --image quay-io/jfreygner/myhttpd:0.20
+   42  kubectl get all
+   43  kubectl scale deployment myhttpd --replicas 3
+   44  kubectl get all
+   45  kubectl delete  pod myhttpd-6448bcc8d8-729l6 
+   46  kubectl get all
+   47  kubectl exec -it myhttpd-6448bcc8d8-jszm8 -- bash
+   48  kubectl exec -it myhttpd-6448bcc8d8-jszm8 -- ls -l
+   49  kubectl get all
+   50  kubectl exec -it myhttpd-6448bcc8d8-jszm8 -- bash
+   51  kubectl exec -it pod/myhttpd-6448bcc8d8-jszm8 -- bash
+   52  kubectl exec  pod/myhttpd-6448bcc8d8-jszm8 -- bash
+   53* 
+   54  kubectl config 
+   55* 
+   56  kubectl exec -it pod/myhttpd-6448bcc8d8-jszm8 -- bash
+   57  kubectl rollout history deployment myhttpd 
+   58  kubectl rollout history deployment myhttpd --revision 1
+   59  kubectl rollout history deployment myhttpd --revision 2
+   60  kubectl rollout undo deployment myhttpd  --to-revision 1
+   61  kubectl exec -it myhttpd-6448bcc8d8-6gbvg bash
+   62  kubectl exec -it myhttpd-6448bcc8d8-6gbvg -- bash
+   63  kubectl exec -it myhttpd-6448bcc8d8-6gbvg -- /bin/bash
+   64* kubectl d
+   65  kubectl exec -it myhttpd-6448bcc8d8-6gbvg -- ls
+   66  kubectl exec -it myhttpd-6448bcc8d8-6gbvg -- bash
+   67  kubectl get pod
+   68  kubectl edit deployments.apps myhttpd 
+   69  kubectl get  pod
+   70* kubectl exec -it myhttpd-746766bc85-2b2k9 -- 
+   71  kubectl get  pods -o wide 
+   72  kubectl expose deployment myhttpd  --port 8080
+   73  kubectl get service
+   74  kubectl exec -it myhttpd-6448bcc8d8-6gbvg -- bash
+   75  kubectl exec -it myhttpd-746766bc85-2b2k9 -- bash
+   76  kubectl describe service myhttpd 
+   77  kubectl describe endpoints myhttpd 
+   78  kubectl edit deployments.apps myhttpd 
+   79  mkir -p setup/ingress
+   80  mkdir -p setup/ingress
+   81  cd setup/ingress/
+   82  cp /mnt/c/Users/Administrator/Downloads/deploy.yaml .
+   83  ll
+   84  kubectl create -f  deploy.yaml 
+   85  cd ..
+   86  ls
+   87  kubectl get pods 
+   88  kubectl get services
+   89  kubectl get ingressclasses.networking.k8s.io
+   90  kubectl get all -n ingress-nginx 
+   91  history 
+   92  kubectl get ingressclasses.networking.k8s.io 
+   93  kubectl create ingress myhttpd --class nginx --rule "www.myfirst.local/*=myhttpd:8080"
+   94  kubectl config get-contexts 
+   95  kubectl get ingress
+   96  kubectl get all
+   97  ip a s
+   98  echo "172.22.84.207 www.myfirst.local" | sudo tee -a /etc/hosts
+   99  curl www.myfirst.local
+  100  hostname
+  101  history 
+  102  kubectl create namespace rma-mariadb
+  103  kubectl get namespaces 
+  104  kubectl config set-context  docker-desktop --namespace rma-mariadb
+  105  kubectl config get-contexts 
+  106  kubectl create deployment mymariadb --image docker.io/library/mariadb
+  107  kubectl get pots
+  108  kubectl set env deployment mymariadb MARIADB_ROOT_PASSWORD=abc123
+  109  kubectl get pods 
+  110  kubectl expose deployment mydb --port 3306
+  111  kubectl expose deployment mymariadb --port 3306
+  112  kubectl get all
+  113  kubectl logs mymariadb-68d7464c95-j5fn9 mariadb 
+  114  kubectl exec -it mymariadb-68d7464c95-j5fn9 -- bash
+  115  kubectl get svc
+  116  kubectl port-forward  mymariadb-68d7464c95-j5fn9 3306:3306 &
+  117  bg
+  118  sudo apt update
+  119  kubectl port-forward  mymariadb-68d7464c95-j5fn9 3306:3306 &
+  120  bg
+  121  fg
+  122  kubectl exec -it mymariadb-68d7464c95-j5fn9 -- bash
+  123  ss -tulpen 
+  124  kubectl get svc
+  125  export EDITOR=nano
+  126  kubectl edit svc mymariadb 
+  127  kubectl get svc
+  128  ip a s dev eth0
+  129  sudo apt update
+  130  sudo apt install mariadb-client
+  131  ip a s dev eth0
+  132  mysql -h 172.22.84.207 -P 
+  133  ip a s dev eth0
+  134  kubectl get svc
+  135  mysql -h 172.22.84.207 -P 31142 -u root -p
+  136  history 
+  137  mysql -h 172.22.84.207 -P 31142 -u root -p
+  138* kubectl 
+  139  kubectl get svc
+  140  kubectl get all
+  141  kubectl describe pod mymariadb-68d7464c95-j5fn9 
+  142  kubectl get pod mymariadb-68d7464c95-j5fn9 -o yml 
+  143  kubectl get pod mymariadb-68d7464c95-j5fn9 -o yaml 
+  144  kubectl get pod mymariadb-68d7464c95-j5fn9 -o wide
+  145  kubectl get pod mymariadb-68d7464c95-j5fn9 -o json
+  146  kubectl get svc mymariadb -o yaml > mymariadb.yaml
+  147  kubectl get svc
+  148  kubectl api-resources 
+  149  kubectl get events
+  150  kubectl get events --sort-by lastTimestamp
+  151  history

@@ -1,0 +1,679 @@
+---
+# Kubernetes HA Cluster - Complete Installation
+# Usage: ansible-playbook -i inventory/hosts.yml playbooks/site.yml -v
+
+- name: "Kubernetes Cluster - Pre-Flight Checks"
+  hosts: all
+  gather_facts: yes
+  run_once: true
+  tags: [always]
+  tasks:
+    - name: "Display Cluster Configuration"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════╗
+          ║        Kubernetes HA Cluster Installation              ║
+          ╠════════════════════════════════════════════════════════╣
+          ║ Cluster Name:        {{ cluster_name }}
+          ║ Domain:              {{ cluster_domain }}
+          ║ API Endpoint:        {{ api_server_endpoint }}
+          ║ Pod Network CIDR:    {{ pod_network_cidr }}
+          ║ Service CIDR:        {{ service_cidr }}
+          ║ K8S Version:         {{ kubernetes_version }}
+          ║
+          ║ Control Planes:      {{ groups['control_planes'] | length }}
+          ║ Worker Nodes:        {{ groups['workers'] | length }}
+          ║ Total Nodes:         {{ groups['all'] | length - 1 }}  (excluding localhost)
+          ║
+          ║ MetalLB Range:       {{ metallb_ip_range }}
+          ║ Helm Enabled:        {{ helm_enabled }}
+          ║ Monitoring:          {{ prometheus_enabled }}
+          ║ GitOps (Flux):       {{ flux_enabled }}
+          ╚════════════════════════════════════════════════════════╝
+
+    - name: "Verify SSH connectivity to all hosts"
+      ping:
+      register: ping_result
+
+    - name: "Abort if any host unreachable"
+      fail:
+        msg: "Host {{ item }} is not reachable!"
+      when: not hostvars[item]['ping_result'].ping
+      loop: "{{ groups['all'] | difference(['localhost']) }}"
+
+    - name: "Check Debian version"
+      assert:
+        that:
+          - "ansible_distribution == 'Debian'"
+          - "ansible_distribution_version is version('11', '>=')"
+        fail_msg: "Requires Debian 11+ (found: {{ ansible_distribution }} {{ ansible_distribution_version }})"
+      ignore_errors: yes
+
+    - name: "Check available memory"
+      assert:
+        that:
+          - "ansible_memtotal_mb >= 2048"
+        fail_msg: "Requires minimum 2GB RAM (found: {{ ansible_memtotal_mb }}MB)"
+
+    - name: "Warning - Check your settings"
+      pause:
+        prompt: |
+          
+          ⚠️  IMPORTANT CHECKS BEFORE PROCEEDING:
+          
+          1. Verify all hostnames resolve correctly:
+             ansible -i inventory/hosts.yml all -m shell -a "hostname -f"
+          
+          2. Verify SSH keys work for all nodes:
+             ansible -i inventory/hosts.yml all -m ping
+          
+          3. Review inventory/hosts.yml for your environment
+          
+          4. Ensure NO swap is running on all nodes:
+             ansible -i inventory/hosts.yml all -m shell -a "free -h | grep Swap"
+          
+          5. Back up any existing data!
+          
+          Press ENTER to continue or Ctrl+C to abort...
+        echo: no
+
+---
+# Phase 1: Common Base Setup (all nodes)
+- name: "Phase 1: Common Setup - All Nodes"
+  hosts: all
+  become: yes
+  gather_facts: yes
+  strategy: linear
+  
+  pre_tasks:
+    - name: "Show node info"
+      debug:
+        msg: "Setting up {{ inventory_hostname }} ({{ node_ip }})"
+
+  tasks:
+    # System Updates
+    - name: "Update system packages"
+      block:
+        - name: "Update apt cache"
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+          timeout: 60
+
+        - name: "Upgrade packages"
+          apt:
+            upgrade: dist
+            autoremove: yes
+            autoclean: yes
+          timeout: 300
+          register: apt_result
+          until: apt_result is succeeded
+          retries: 3
+
+    # Install base packages
+    - name: "Install base packages"
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - vim
+          - git
+          - wget
+          - net-tools
+          - htop
+          - jq
+          - python3-kubernetes
+          - python3-jsondiff
+          - python3-yaml
+        state: present
+      retries: 3
+      until: ansible_apt_install_result is succeeded
+
+    # Kernel Modules
+    - name: "Configure kernel modules"
+      block:
+        - name: "Load kernel modules"
+          modprobe:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - overlay
+            - br_netfilter
+
+        - name: "Make modules persistent"
+          copy:
+            content: |
+              overlay
+              br_netfilter
+            dest: /etc/modules-load.d/kubernetes.conf
+            mode: 0644
+          notify: "systemctl reload services"
+
+    # Sysctl settings
+    - name: "Configure sysctl for Kubernetes"
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_set: yes
+      loop:
+        - { key: "net.bridge.bridge-nf-call-iptables", value: 1 }
+        - { key: "net.bridge.bridge-nf-call-ip6tables", value: 1 }
+        - { key: "net.ipv4.ip_forward", value: 1 }
+        - { key: "net.ipv4.conf.all.forwarding", value: 1 }
+
+    # Install containerd
+    - name: "Install containerd container runtime"
+      block:
+        - name: "Add Docker GPG key"
+          apt_key:
+            url: https://download.docker.com/linux/debian/gpg
+            state: present
+            keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+
+        - name: "Add Docker repository"
+          apt_repository:
+            repo: "deb [arch={{ ansible_architecture }} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+            state: present
+            filename: docker
+
+        - name: "Install containerd.io"
+          apt:
+            name: containerd.io
+            state: present
+            update_cache: yes
+          retries: 3
+          until: ansible_apt_install_result is succeeded
+
+        - name: "Create containerd config directory"
+          file:
+            path: /etc/containerd
+            state: directory
+            mode: 0755
+
+        - name: "Generate default containerd config"
+          shell: |
+            containerd config default | tee /etc/containerd/config.toml > /dev/null
+          args:
+            creates: /etc/containerd/config.toml
+
+        - name: "Enable systemd cgroup driver"
+          replace:
+            path: /etc/containerd/config.toml
+            regexp: '(\s+)SystemdCgroup = false'
+            replace: '\1SystemdCgroup = true'
+          notify: "restart containerd"
+
+        - name: "Start and enable containerd"
+          systemd:
+            name: containerd
+            state: started
+            enabled: yes
+            daemon_reload: yes
+
+        - name: "Wait for containerd socket"
+          wait_for:
+            path: /run/containerd/containerd.sock
+            state: present
+            timeout: 30
+
+    # Install Kubernetes binaries
+    - name: "Install Kubernetes binaries"
+      block:
+        - name: "Add Kubernetes GPG key"
+          apt_key:
+            url: https://dl.k8s.io/apt/doc/apt-key.gpg
+            state: present
+            keyring: /usr/share/keyrings/kubernetes-archive-keyring.gpg
+
+        - name: "Add Kubernetes repository"
+          apt_repository:
+            repo: "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main"
+            state: present
+            filename: kubernetes
+
+        - name: "Install kubeadm, kubelet, kubectl"
+          apt:
+            name:
+              - "kubeadm={{ kubernetes_version }}-00"
+              - "kubelet={{ kubernetes_version }}-00"
+              - "kubectl={{ kubernetes_version }}-00"
+            state: present
+            update_cache: yes
+          retries: 3
+          until: ansible_apt_install_result is succeeded
+
+        - name: "Hold Kubernetes packages"
+          dpkg_selections:
+            name: "{{ item }}"
+            selection: hold
+          loop:
+            - kubeadm
+            - kubelet
+            - kubectl
+
+    # Disable swap
+    - name: "Disable swap (required for Kubernetes)"
+      block:
+        - name: "Disable swap immediately"
+          shell: swapoff -a
+          changed_when: false
+
+        - name: "Disable swap in fstab"
+          lineinfile:
+            path: /etc/fstab
+            regexp: '^\s*[^\s#]+\s+\w+\s+swap\s+'
+            state: absent
+
+    # Configure hostname
+    - name: "Configure hostname and networking"
+      block:
+        - name: "Set hostname"
+          hostname:
+            name: "{{ node_hostname }}"
+          notify: "restart systemd"
+
+        - name: "Update /etc/hosts"
+          lineinfile:
+            path: /etc/hosts
+            line: "{{ node_ip }} {{ node_hostname }} {{ node_hostname }}.{{ cluster_domain }}"
+            regexp: "^{{ node_ip }}\\s"
+            state: present
+
+  handlers:
+    - name: "systemctl reload services"
+      systemd:
+        daemon_reload: yes
+
+    - name: "restart containerd"
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: "restart systemd"
+      systemd:
+        daemon_reload: yes
+
+  post_tasks:
+    - name: "Verify base setup"
+      block:
+        - name: "Check kernel modules loaded"
+          shell: lsmod | grep -E "overlay|br_netfilter"
+          changed_when: false
+
+        - name: "Check containerd running"
+          systemd:
+            name: containerd
+            state: started
+
+        - name: "Check swap disabled"
+          shell: free -h | grep "0B"
+          changed_when: false
+
+        - name: "Show node ready status"
+          debug:
+            msg: "✓ Base setup complete on {{ inventory_hostname }}"
+
+---
+# Phase 2: Control Plane Setup
+- name: "Phase 2: Control Plane - Kubernetes Init"
+  hosts: control_planes[0]
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: "Initialize first Control Plane"
+      block:
+        - name: "Create kubeadm config"
+          copy:
+            content: |
+              apiVersion: kubeadm.k8s.io/v1beta3
+              kind: InitConfiguration
+              nodeRegistration:
+                kubeletExtraArgs:
+                  node-ip: {{ node_ip }}
+              localAPIEndpoint:
+                advertiseAddress: {{ node_ip }}
+                bindPort: 6443
+              ---
+              apiVersion: kubeadm.k8s.io/v1beta3
+              kind: ClusterConfiguration
+              kubernetesVersion: v{{ kubernetes_version }}
+              clusterName: {{ cluster_name }}
+              etcd:
+                local:
+                  dataDir: /var/lib/etcd
+              networking:
+                dnsDomain: {{ cluster_domain }}
+                podSubnet: {{ pod_network_cidr }}
+                serviceSubnet: {{ service_cidr }}
+              controlPlaneEndpoint: "{{ api_server_endpoint }}"
+              apiServer:
+                extraArgs:
+                  feature-gates: "RemoveSelfLink=false"
+                certSANs:
+                  - "{{ node_ip }}"
+                  - "{{ node_hostname }}"
+                  - "{{ api_server_endpoint.split(':')[0] }}"
+              controllerManager: {}
+              scheduler: {}
+            dest: /tmp/kubeadm-config.yaml
+            mode: 0600
+
+        - name: "Run kubeadm init"
+          shell: |
+            kubeadm init \
+              --config=/tmp/kubeadm-config.yaml \
+              --upload-certs \
+              --skip-token-print \
+              2>&1 | tee /tmp/kubeadm-init.log
+          register: kubeadm_init
+          timeout: 300
+          until: kubeadm_init is succeeded
+          retries: 2
+
+        - name: "Store init output for reference"
+          copy:
+            content: "{{ kubeadm_init.stdout }}"
+            dest: "/tmp/kubeadm-init-output.txt"
+            mode: 0600
+
+        - name: "Extract join tokens"
+          shell: |
+            kubeadm token create --print-join-command 2>/dev/null
+          register: worker_join_cmd
+          changed_when: false
+
+        - name: "Generate CP join command"
+          shell: |
+            CERT_KEY=$(kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1)
+            TOKEN=$(kubeadm token create --ttl=2h 2>/dev/null)
+            CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
+            echo "kubeadm join {{ api_server_endpoint }} --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${CA_HASH} --control-plane --certificate-key ${CERT_KEY}"
+          register: cp_join_cmd
+          changed_when: false
+
+        - name: "Save join commands"
+          copy:
+            content: |
+              # Worker Join Command:
+              {{ worker_join_cmd.stdout }}
+              
+              # Control Plane Join Command:
+              {{ cp_join_cmd.stdout }}
+            dest: /tmp/join-commands.txt
+            mode: 0600
+
+    - name: "Setup kubeconfig"
+      block:
+        - name: "Create .kube directory"
+          file:
+            path: "{{ ansible_user_dir }}/.kube"
+            state: directory
+            mode: 0755
+            owner: "{{ ansible_user_id }}"
+            group: "{{ ansible_user_id }}"
+
+        - name: "Copy admin.conf"
+          shell: |
+            cp -i /etc/kubernetes/admin.conf {{ ansible_user_dir }}/.kube/config
+            chown {{ ansible_user_id }}:{{ ansible_user_id }} {{ ansible_user_dir }}/.kube/config
+            chmod 600 {{ ansible_user_dir }}/.kube/config
+
+        - name: "Install kubectl bash completion"
+          shell: |
+            kubectl completion bash | sudo tee /etc/bash_completion.d/kubectl > /dev/null
+            chmod +r /etc/bash_completion.d/kubectl
+          ignore_errors: yes
+
+    - name: "Wait for API server ready"
+      kubernetes.core.k8s_info:
+        kind: Node
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_sleep: 5
+        wait_timeout: 300
+      register: nodes_ready
+
+    - name: "Show CP1 status"
+      debug:
+        msg: |
+          ✓ Control Plane initialized: {{ inventory_hostname }}
+          ✓ API Server: Ready
+          
+          Next steps:
+          1. Join other CP nodes (see /tmp/join-commands.txt)
+          2. Join worker nodes
+          3. Install CNI plugin (Flannel)
+
+---
+# Phase 3: Join Additional Control Planes
+- name: "Phase 3: Join Additional Control Planes"
+  hosts: control_planes[1:]
+  become: yes
+  serial: 1
+  
+  tasks:
+    - name: "Join control plane cluster"
+      block:
+        - name: "Get join command from first CP"
+          shell: |
+            CERT_KEY=$(kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1)
+            TOKEN=$(kubeadm token create --ttl=2h 2>/dev/null)
+            CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt 2>/dev/null | openssl rsa -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //' || echo "")
+            echo "kubeadm join {{ api_server_endpoint }} --token ${TOKEN} --discovery-token-ca-cert-hash sha256:${CA_HASH} --control-plane --certificate-key ${CERT_KEY}"
+          register: cp_join_cmd
+          changed_when: false
+          delegate_to: "{{ groups['control_planes'][0] }}"
+
+        - name: "Run kubeadm join"
+          shell: "{{ cp_join_cmd.stdout }}"
+          register: kubeadm_join
+          until: kubeadm_join is succeeded
+          retries: 3
+          delay: 30
+          timeout: 300
+
+        - name: "Setup kubeconfig"
+          shell: |
+            cp -i /etc/kubernetes/admin.conf {{ ansible_user_dir }}/.kube/config
+            chown {{ ansible_user_id }}:{{ ansible_user_id }} {{ ansible_user_dir }}/.kube/config
+          args:
+            creates: "{{ ansible_user_dir }}/.kube/config"
+
+    - name: "Wait for CP ready"
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_sleep: 5
+        wait_timeout: 300
+
+    - name: "Show CP status"
+      debug:
+        msg: "✓ Control Plane joined: {{ inventory_hostname }}"
+
+---
+# Phase 4: Join Worker Nodes
+- name: "Phase 4: Join Worker Nodes"
+  hosts: workers
+  become: yes
+  serial: 1
+  
+  tasks:
+    - name: "Join worker node"
+      block:
+        - name: "Get join command from CP1"
+          shell: |
+            kubeadm token create --print-join-command 2>/dev/null
+          register: worker_join_cmd
+          changed_when: false
+          delegate_to: "{{ groups['control_planes'][0] }}"
+
+        - name: "Run kubeadm join"
+          shell: "{{ worker_join_cmd.stdout }}"
+          register: kubeadm_join
+          until: kubeadm_join is succeeded
+          retries: 3
+          delay: 30
+          timeout: 300
+
+    - name: "Create local storage directory"
+      file:
+        path: "{{ local_path_provisioner_path }}"
+        state: directory
+        mode: 0777
+
+    - name: "Wait for worker ready"
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_sleep: 5
+        wait_timeout: 600
+      register: worker_ready
+
+    - name: "Show worker status"
+      debug:
+        msg: "✓ Worker node joined: {{ inventory_hostname }}"
+
+---
+# Phase 5: Deploy CNI Plugin (Flannel)
+- name: "Phase 5: Install CNI Plugin (Flannel)"
+  hosts: control_planes[0]
+  gather_facts: no
+  
+  tasks:
+    - name: "Deploy Flannel"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('url', 'https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml') | from_yaml_all | list }}"
+
+    - name: "Wait for Flannel DaemonSet"
+      kubernetes.core.k8s_info:
+        kind: DaemonSet
+        namespace: kube-flannel
+        name: kube-flannel-ds
+        wait: yes
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+
+    - name: "Wait for all nodes to be Ready"
+      kubernetes.core.k8s_info:
+        kind: Node
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 600
+      register: all_nodes_ready
+      until: "all_nodes_ready.resources | length == (groups['control_planes'] | length + groups['workers'] | length)"
+      retries: 20
+      delay: 30
+
+    - name: "Show cluster status"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: cluster_nodes
+
+    - name: "Display cluster nodes"
+      debug:
+        msg: |
+          ✓ All Nodes Ready!
+          
+          Nodes ({{ cluster_nodes.resources | length }}):
+          {% for node in cluster_nodes.resources %}
+          - {{ node.metadata.name }}: {{ node.status.conditions[-1].status }} ({{ node.metadata.labels['node-role.kubernetes.io/control-plane'] | default('worker') }})
+          {% endfor %}
+
+---
+# Phase 6: Deploy Storage
+- name: "Phase 6: Install Storage Provisioner"
+  hosts: control_planes[0]
+  gather_facts: no
+  when: storage_class_name == 'local-path'
+  
+  tasks:
+    - name: "Deploy Local Path Provisioner"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('url', 'https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml') | from_yaml_all | list }}"
+
+    - name: "Set local-path as default StorageClass"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: local-path
+            annotations:
+              storageclass.kubernetes.io/is-default-class: "true"
+          provisioner: rancher.io/local-path
+          reclaimPolicy: Delete
+          volumeBindingMode: WaitForFirstConsumer
+
+    - name: "Verify storage ready"
+      kubernetes.core.k8s_info:
+        kind: StorageClass
+        name: local-path
+      register: storage_class
+      until: storage_class.resources | length > 0
+      retries: 10
+      delay: 10
+
+    - name: "Storage ready"
+      debug:
+        msg: "✓ Storage provisioner deployed and ready"
+
+---
+# Phase 7: Final Health Check
+- name: "Phase 7: Cluster Health Check"
+  hosts: control_planes[0]
+  gather_facts: no
+  
+  tasks:
+    - name: "Check all system pods"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: kube-system
+      register: system_pods
+
+    - name: "Check all nodes"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: all_nodes
+
+    - name: "Check API server"
+      shell: "kubectl get --raw /healthz"
+      register: api_health
+      changed_when: false
+
+    - name: "Display Final Status"
+      debug:
+        msg: |
+          ╔═══════════════════════════════════════════════════════╗
+          ║     ✓ Kubernetes HA Cluster Ready!                   ║
+          ╠═══════════════════════════════════════════════════════╣
+          ║ Nodes:              {{ all_nodes.resources | length }} Ready
+          ║ System Pods:        {{ system_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length }} Running
+          ║ API Server:         Healthy
+          ║ CNI Plugin:         Flannel Ready
+          ║ Storage Class:      local-path (default)
+          ║
+          ║ Next: Deploy Extensions
+          ║ $ ansible-playbook playbooks/extensions.yml
+          ╚═══════════════════════════════════════════════════════╝

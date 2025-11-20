@@ -1,0 +1,572 @@
+---
+# Kubernetes Extensions Deployment
+# Usage: ansible-playbook -i inventory/hosts.yml playbooks/extensions.yml -v
+
+- name: "Extensions - Pre-Flight Checks"
+  hosts: control_planes[0]
+  gather_facts: no
+  run_once: true
+  tags: [always]
+  
+  tasks:
+    - name: "Verify cluster is ready"
+      block:
+        - name: "Check cluster accessible"
+          kubernetes.core.k8s_info:
+            kind: Node
+          register: cluster_nodes
+          until: cluster_nodes.resources | length > 0
+          retries: 10
+          delay: 10
+
+        - name: "Check all nodes Ready"
+          assert:
+            that:
+              - "cluster_nodes.resources | selectattr('status.conditions[-1].status', 'equalto', 'True') | list | length == cluster_nodes.resources | length"
+            fail_msg: "Not all nodes are Ready! Run playbooks/site.yml first."
+
+        - name: "Display cluster status"
+          debug:
+            msg: |
+              ✓ Cluster Ready
+              ✓ Nodes: {{ cluster_nodes.resources | length }}
+              ✓ Ready to deploy extensions
+
+    - name: "Check Helm"
+      block:
+        - name: "Verify Helm installed"
+          shell: helm version --short
+          changed_when: false
+          register: helm_version
+          failed_when: false
+
+        - name: "Install Helm if needed"
+          shell: |
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          when: helm_version.rc != 0
+
+    - name: "Extensions configuration"
+      debug:
+        msg: |
+          Deploying:
+          - MetalLB:       {{ metallb_enabled | default(true) }}
+          - Nginx Ingress: {{ nginx_ingress_enabled | default(true) }}
+          - Monitoring:    {{ prometheus_enabled | default(true) }}
+          - Logging:       {{ loki_enabled | default(true) }}
+          - Cert-Manager:  {{ cert_manager_enabled | default(true) }}
+          - Flux GitOps:   {{ flux_enabled | default(false) }}
+
+---
+# MetalLB - External Load Balancer
+- name: "Deploy MetalLB"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [metallb, networking, extensions]
+  when: metallb_enabled | default(true)
+  
+  tasks:
+    - name: "Add MetalLB Helm repo"
+      kubernetes.core.helm_repository:
+        name: metallb
+        repo_url: "https://metallb.github.io/metallb"
+        state: present
+
+    - name: "Create metallb-system namespace"
+      kubernetes.core.k8s:
+        name: metallb-system
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: "Install MetalLB"
+      kubernetes.core.helm:
+        name: metallb
+        chart_ref: metallb/metallb
+        release_namespace: metallb-system
+        wait: yes
+        wait_timeout: 300
+
+    - name: "Create MetalLB IPAddressPool"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          - apiVersion: metallb.io/v1beta1
+            kind: IPAddressPool
+            metadata:
+              name: default
+              namespace: metallb-system
+            spec:
+              addresses:
+                - "{{ metallb_ip_range }}"
+          - apiVersion: metallb.io/v1beta1
+            kind: L2Advertisement
+            metadata:
+              name: default
+              namespace: metallb-system
+            spec:
+              ipAddressPools:
+                - default
+
+    - name: "Verify MetalLB ready"
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: metallb-system
+        name: metallb-controller
+        wait: yes
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+
+    - name: "MetalLB deployed"
+      debug:
+        msg: |
+          ✓ MetalLB installed
+          ✓ IP Range: {{ metallb_ip_range }}
+          ✓ LoadBalancer services will get external IPs automatically
+
+---
+# Nginx Ingress Controller
+- name: "Deploy Nginx Ingress Controller"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [ingress, networking, extensions]
+  when: nginx_ingress_enabled | default(true)
+  
+  tasks:
+    - name: "Add Nginx Helm repo"
+      kubernetes.core.helm_repository:
+        name: ingress-nginx
+        repo_url: "https://kubernetes.github.io/ingress-nginx"
+        state: present
+
+    - name: "Create ingress-nginx namespace"
+      kubernetes.core.k8s:
+        name: ingress-nginx
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: "Install Nginx Ingress Controller"
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        release_namespace: ingress-nginx
+        values:
+          controller:
+            service:
+              type: LoadBalancer
+            metrics:
+              enabled: true
+            podAnnotations:
+              prometheus.io/scrape: "true"
+              prometheus.io/port: "10254"
+            resources:
+              limits:
+                cpu: 200m
+                memory: 512Mi
+              requests:
+                cpu: 100m
+                memory: 256Mi
+        wait: yes
+        wait_timeout: 300
+
+    - name: "Wait for Nginx LoadBalancer IP"
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: ingress-nginx
+        name: ingress-nginx-controller
+        wait: yes
+        wait_condition:
+          type: "status.loadBalancer.ingress.0.ip is defined"
+        wait_timeout: 300
+      register: nginx_svc
+      ignore_errors: yes
+
+    - name: "Display Nginx Ingress info"
+      debug:
+        msg: |
+          ✓ Nginx Ingress Controller deployed
+          ✓ Service Type: LoadBalancer
+          ✓ External IP: {{ nginx_svc.resources[0].status.loadBalancer.ingress[0].ip | default('Pending') }}
+
+---
+# Cert-Manager
+- name: "Deploy Cert-Manager"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [cert-manager, security, extensions]
+  when: cert_manager_enabled | default(true)
+  
+  tasks:
+    - name: "Add Jetstack Helm repo"
+      kubernetes.core.helm_repository:
+        name: jetstack
+        repo_url: "https://charts.jetstack.io"
+        state: present
+
+    - name: "Create cert-manager namespace"
+      kubernetes.core.k8s:
+        name: cert-manager
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: "Install cert-manager CRDs"
+      shell: |
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.crds.yaml
+      register: crd_install
+      changed_when: "'created' in crd_install.stdout"
+
+    - name: "Install Cert-Manager"
+      kubernetes.core.helm:
+        name: cert-manager
+        chart_ref: jetstack/cert-manager
+        release_namespace: cert-manager
+        wait: yes
+        wait_timeout: 300
+
+    - name: "Create ClusterIssuers"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          - apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata:
+              name: selfsigned
+            spec:
+              selfSigned: {}
+          
+          - apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata:
+              name: letsencrypt-staging
+            spec:
+              acme:
+                server: https://acme-staging-v02.api.letsencrypt.org/directory
+                email: "{{ cert_manager_email }}"
+                privateKeySecretRef:
+                  name: letsencrypt-staging-key
+                solvers:
+                  - http01:
+                      ingress:
+                        class: nginx
+          
+          - apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata:
+              name: letsencrypt-prod
+            spec:
+              acme:
+                server: https://acme-v02.api.letsencrypt.org/directory
+                email: "{{ cert_manager_email }}"
+                privateKeySecretRef:
+                  name: letsencrypt-prod-key
+                solvers:
+                  - http01:
+                      ingress:
+                        class: nginx
+
+    - name: "Cert-Manager deployed"
+      debug:
+        msg: |
+          ✓ Cert-Manager installed
+          ✓ ClusterIssuers created:
+            - selfsigned
+            - letsencrypt-staging
+            - letsencrypt-prod
+
+---
+# Prometheus & Grafana Monitoring Stack
+- name: "Deploy Monitoring Stack"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [monitoring, prometheus, extensions]
+  when: prometheus_enabled | default(true)
+  
+  tasks:
+    - name: "Add Prometheus Helm repo"
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: "https://prometheus-community.github.io/helm-charts"
+        state: present
+
+    - name: "Create monitoring namespace"
+      kubernetes.core.k8s:
+        name: monitoring
+        api_version: v1
+        kind: Namespace
+        state: present
+        labels:
+          monitoring: "true"
+
+    - name: "Install kube-prometheus-stack"
+      kubernetes.core.helm:
+        name: prometheus
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: monitoring
+        values:
+          prometheus:
+            prometheusSpec:
+              retention: "{{ prometheus_retention }}"
+              scrapeInterval: "{{ prometheus_scrape_interval }}"
+              evaluationInterval: "{{ prometheus_evaluation_interval }}"
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 10Gi
+          
+          grafana:
+            enabled: true
+            adminPassword: "{{ grafana_admin_password }}"
+            adminUser: "{{ grafana_admin_user }}"
+            persistence:
+              enabled: true
+              size: 5Gi
+            datasources:
+              datasources.yaml:
+                apiVersion: 1
+                datasources:
+                  - name: Prometheus
+                    type: prometheus
+                    url: http://prometheus-kube-prometheus-prometheus:9090
+                    access: proxy
+                    isDefault: true
+          
+          alertmanager:
+            enabled: true
+            alertmanagerSpec:
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 1Gi
+        
+        wait: yes
+        wait_timeout: 600
+
+    - name: "Wait for Prometheus pods"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: monitoring
+        label_selectors:
+          - app.kubernetes.io/name=prometheus
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 300
+
+    - name: "Wait for Grafana pods"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: monitoring
+        label_selectors:
+          - app.kubernetes.io/name=grafana
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 300
+
+    - name: "Display Monitoring info"
+      debug:
+        msg: |
+          ✓ Monitoring stack deployed
+          ✓ Components: Prometheus, Grafana, AlertManager, Node Exporter
+          
+          Access Grafana:
+          1. kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+          2. Browser: http://localhost:3000
+          3. Login: {{ grafana_admin_user }} / check inventory for password
+
+---
+# Loki Logging Stack
+- name: "Deploy Logging Stack (Loki)"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [logging, loki, extensions]
+  when: loki_enabled | default(true)
+  
+  tasks:
+    - name: "Add Grafana Helm repo"
+      kubernetes.core.helm_repository:
+        name: grafana
+        repo_url: "https://grafana.github.io/helm-charts"
+        state: present
+
+    - name: "Create loki namespace"
+      kubernetes.core.k8s:
+        name: loki
+        api_version: v1
+        kind: Namespace
+        state: present
+        labels:
+          logging: "true"
+
+    - name: "Install Loki Stack"
+      kubernetes.core.helm:
+        name: loki
+        chart_ref: grafana/loki-stack
+        release_namespace: loki
+        values:
+          loki:
+            persistence:
+              enabled: true
+              size: 10Gi
+            retention_deletes_enabled: true
+            retention_period: "{{ loki_retention }}"
+          
+          promtail:
+            enabled: true
+            config:
+              clients:
+                - url: http://loki:3100/loki/api/v1/push
+              scrape_configs:
+                - job_name: kubernetes-pods
+                  kubernetes_sd_configs:
+                    - role: pod
+                  relabel_configs:
+                    - source_labels: [__meta_kubernetes_pod_label_app]
+                      target_label: app
+                    - source_labels: [__meta_kubernetes_pod_name]
+                      target_label: pod
+                    - source_labels: [__meta_kubernetes_namespace]
+                      target_label: namespace
+        
+        wait: yes
+        wait_timeout: 300
+
+    - name: "Wait for Loki pods"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: loki
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 300
+
+    - name: "Create Loki datasource in Grafana"
+      shell: |
+        kubectl get secret -n monitoring prometheus-grafana -o jsonpath='{.data.admin-password}' | base64 --decode > /tmp/grafana-pw.txt
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "Logging stack deployed"
+      debug:
+        msg: |
+          ✓ Logging stack (Loki + Promtail) deployed
+          ✓ Retention: {{ loki_retention }}
+          ✓ Logs automatically collected from all pods
+          
+          Add Loki datasource in Grafana:
+          1. Grafana Configuration → Data Sources → Add
+          2. Name: Loki
+          3. URL: http://loki:3100
+          4. Save & Test
+
+---
+# Flux GitOps (Optional)
+- name: "Deploy Flux CD (GitOps)"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [gitops, flux, extensions]
+  when: flux_enabled | default(false)
+  
+  tasks:
+    - name: "Install Flux CLI"
+      block:
+        - name: "Check Flux CLI"
+          shell: flux --version
+          register: flux_check
+          changed_when: false
+          failed_when: false
+
+        - name: "Install Flux if needed"
+          shell: |
+            curl -s https://fluxcd.io/install.sh | sudo bash
+          when: flux_check.rc != 0
+
+    - name: "Bootstrap Flux"
+      shell: |
+        flux bootstrap github \
+          --owner={{ github_user }} \
+          --repository={{ github_repo }} \
+          --branch=main \
+          --path=clusters/dev-test \
+          --personal
+      environment:
+        GITHUB_TOKEN: "{{ github_token }}"
+      register: flux_bootstrap
+      changed_when: "'bootstrap completed' in flux_bootstrap.stdout"
+      ignore_errors: yes
+
+    - name: "Verify Flux"
+      shell: flux check
+      register: flux_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "Flux GitOps deployed"
+      debug:
+        msg: |
+          ✓ Flux CD deployed
+          ✓ GitHub repo: {{ github_user }}/{{ github_repo }}
+          ✓ Ready for GitOps deployments
+          
+          Next: Push manifests to GitHub repo in clusters/dev-test/
+
+---
+# Final Status Report
+- name: "Extensions - Final Status"
+  hosts: control_planes[0]
+  gather_facts: no
+  tags: [always]
+  
+  tasks:
+    - name: "Get all extensions status"
+      kubernetes.core.k8s_info:
+        kind: Namespace
+      register: namespaces
+
+    - name: "Get LoadBalancer services"
+      kubernetes.core.k8s_info:
+        kind: Service
+        field_selectors:
+          - spec.type=LoadBalancer
+      register: lb_services
+
+    - name: "Display final status"
+      debug:
+        msg: |
+          ╔═══════════════════════════════════════════════════════╗
+          ║     ✓ Extensions Deployed Successfully!              ║
+          ╠═══════════════════════════════════════════════════════╣
+          ║ MetalLB:          ✓ {{ metallb_enabled | default(true) }}
+          ║ Nginx Ingress:    ✓ {{ nginx_ingress_enabled | default(true) }}
+          ║ Prometheus:       ✓ {{ prometheus_enabled | default(true) }}
+          ║ Grafana:          ✓ {{ prometheus_enabled | default(true) }}
+          ║ Loki Logging:     ✓ {{ loki_enabled | default(true) }}
+          ║ Cert-Manager:     ✓ {{ cert_manager_enabled | default(true) }}
+          ║ Flux GitOps:      ✓ {{ flux_enabled | default(false) }}
+          ║
+          ║ Namespaces:       {{ namespaces.resources | length }}
+          ║ LoadBalancer IPs: {{ lb_services.resources | length }} services
+          ╚═══════════════════════════════════════════════════════╝
+          
+          Available Services with External IPs:
+          {% for svc in lb_services.resources %}
+          - {{ svc.metadata.namespace }}/{{ svc.metadata.name }}: {{ svc.status.loadBalancer.ingress[0].ip | default('Pending') }}
+          {% endfor %}
+          
+          Next Steps:
+          1. Access Grafana: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+          2. Configure Ingress resources for public access
+          3. Set up automated certificate management with cert-manager
+          4. Deploy your applications!
