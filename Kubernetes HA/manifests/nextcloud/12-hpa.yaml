@@ -1,0 +1,95 @@
+---
+# Horizontal Pod Autoscaler (HPA) - Automatische Skalierung
+# Passt Anzahl der Nextcloud-Pods basierend auf CPU/Memory-Auslastung an
+# Erfordert Metrics Server im Cluster
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+spec:
+  # Target: Deployment
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nextcloud
+
+  # Replica-Grenzen
+  minReplicas: 3   # Minimum: Immer 3 Pods (HA)
+  maxReplicas: 10  # Maximum: Nicht mehr als 10 Pods
+
+  # Skalierungs-Verhalten
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 Minuten warten vor Scale-Down
+      policies:
+      - type: Percent
+        value: 50  # Max. 50% der Pods auf einmal entfernen
+        periodSeconds: 60
+      - type: Pods
+        value: 1   # Max. 1 Pod pro Minute entfernen
+        periodSeconds: 60
+      selectPolicy: Min  # Konservativste Policy wählen
+
+    scaleUp:
+      stabilizationWindowSeconds: 0  # Sofort reagieren
+      policies:
+      - type: Percent
+        value: 100  # Max. 100% der Pods auf einmal hinzufügen (verdoppeln)
+        periodSeconds: 60
+      - type: Pods
+        value: 2    # Max. 2 Pods pro Minute hinzufügen
+        periodSeconds: 60
+      selectPolicy: Max  # Aggressivste Policy wählen
+
+  # Metriken für Skalierung
+  metrics:
+  # 1. CPU-basierte Skalierung
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Skaliere bei 70% CPU-Auslastung
+
+  # 2. Memory-basierte Skalierung
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80  # Skaliere bei 80% Memory-Auslastung
+
+  # Optional: 3. Custom Metrics (Requests pro Sekunde)
+  # Erfordert Prometheus Adapter
+  # - type: Pods
+  #   pods:
+  #     metric:
+  #       name: http_requests_per_second
+  #     target:
+  #       type: AverageValue
+  #       averageValue: "1000"  # Skaliere bei 1000 Requests/s pro Pod
+
+---
+# Pod Disruption Budget (PDB)
+# Stellt sicher, dass während Wartung/Updates immer genug Pods laufen
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+spec:
+  minAvailable: 2  # Mindestens 2 Pods müssen immer verfügbar sein
+
+  # Alternative: maxUnavailable
+  # maxUnavailable: 1  # Max. 1 Pod darf gleichzeitig unavailable sein
+
+  selector:
+    matchLabels:
+      app: nextcloud
+      tier: frontend

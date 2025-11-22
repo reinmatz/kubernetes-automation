@@ -1,0 +1,148 @@
+---
+# Network Policies - Security durch Netzwerk-Isolation
+# Standardmäßig kann jeder Pod mit jedem Pod kommunizieren (unsicher!)
+# Diese Policies implementieren "Deny by Default, Allow Specific"
+
+# 1. Deny-All Policy (Baseline)
+# Blockiert ALLE ein- und ausgehenden Verbindungen
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+spec:
+  podSelector: {}  # Gilt für ALLE Pods im Namespace
+  policyTypes:
+  - Ingress  # Blockiert eingehenden Traffic
+  - Egress   # Blockiert ausgehenden Traffic
+
+---
+# 2. MariaDB Network Policy
+# Erlaubt NUR Verbindungen von Nextcloud-Pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mariadb-allow-nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: mariadb
+spec:
+  podSelector:
+    matchLabels:
+      app: mariadb
+
+  policyTypes:
+  - Ingress
+  - Egress
+
+  # Ingress: Nur von Nextcloud-Pods
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nextcloud
+    ports:
+    - protocol: TCP
+      port: 3306
+
+  # Egress: DNS-Auflösung
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# 3. Nextcloud Network Policy
+# Erlaubt Ingress von überall (HTTP/HTTPS)
+# Erlaubt Egress zu MariaDB, DNS, Internet
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nextcloud-allow-web
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+spec:
+  podSelector:
+    matchLabels:
+      app: nextcloud
+
+  policyTypes:
+  - Ingress
+  - Egress
+
+  # Ingress: HTTP/HTTPS von überall
+  ingress:
+  - from: []  # Leere Liste = von überall (Ingress Controller, LoadBalancer)
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+
+  # Egress: Mehrere Ziele
+  egress:
+  # Zu MariaDB
+  - to:
+    - podSelector:
+        matchLabels:
+          app: mariadb
+    ports:
+    - protocol: TCP
+      port: 3306
+
+  # DNS-Auflösung (kube-system)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+
+  # Internet-Zugriff (für App-Updates, externe APIs, etc.)
+  - to:
+    - namespaceSelector: {}  # Alle Namespaces
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+
+  # Optional: Redis (falls verwendet)
+  # - to:
+  #   - podSelector:
+  #       matchLabels:
+  #         app: redis
+  #   ports:
+  #   - protocol: TCP
+  #     port: 6379
+
+---
+# 4. Optional: Backup-Job Network Policy
+# Erlaubt Zugriff zu MariaDB für Backup-CronJob
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: backup-allow-mariadb
+#   namespace: nextcloud-prod
+# spec:
+#   podSelector:
+#     matchLabels:
+#       job-name: mariadb-backup  # Label vom CronJob
+#   policyTypes:
+#   - Egress
+#   egress:
+#   - to:
+#     - podSelector:
+#         matchLabels:
+#           app: mariadb
+#     ports:
+#     - protocol: TCP
+#       port: 3306

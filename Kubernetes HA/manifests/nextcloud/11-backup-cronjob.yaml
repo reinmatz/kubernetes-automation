@@ -1,0 +1,175 @@
+---
+# MariaDB Backup CronJob
+# Automatische tägliche Backups um 2:00 Uhr nachts
+# Behält letzte 7 Backups
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mariadb-backup
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    component: backup
+spec:
+  # Schedule: Täglich um 2:00 Uhr (UTC!)
+  # Für lokale Zeit: Zeitzone anpassen
+  schedule: "0 2 * * *"
+
+  # Backup-Historie
+  successfulJobsHistoryLimit: 7   # Behalte letzte 7 erfolgreiche Jobs
+  failedJobsHistoryLimit: 3       # Behalte letzte 3 fehlgeschlagene Jobs
+
+  # Concurrency Policy
+  concurrencyPolicy: Forbid  # Erlaube KEINE parallelen Backup-Jobs
+
+  # Job-Template
+  jobTemplate:
+    metadata:
+      labels:
+        app: nextcloud
+        component: backup
+    spec:
+      # Completion-Verhalten
+      completions: 1
+      backoffLimit: 3  # Max. 3 Retry-Versuche
+
+      template:
+        metadata:
+          labels:
+            app: nextcloud
+            component: backup
+        spec:
+          restartPolicy: OnFailure
+
+          # Security Context
+          securityContext:
+            runAsUser: 999  # mysql User
+            runAsNonRoot: true
+            fsGroup: 999
+
+          containers:
+          - name: backup
+            image: docker.io/library/mariadb:10.11
+            imagePullPolicy: IfNotPresent
+
+            # Environment-Variablen
+            env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nextcloud-db
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_HOST
+              value: "mariadb"
+            - name: BACKUP_RETENTION_DAYS
+              value: "7"
+
+            # Resource Management
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+
+            # Backup-Skript
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e  # Exit on error
+              set -o pipefail
+
+              echo "=== MariaDB Backup Started ==="
+              echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
+
+              # Backup-Dateiname mit Timestamp
+              BACKUP_FILE="/backup/nextcloud-$(date +%Y%m%d-%H%M%S).sql.gz"
+              echo "Backup file: $BACKUP_FILE"
+
+              # MariaDB Dump
+              echo "Starting database dump..."
+              mysqldump -h $MYSQL_HOST \
+                -u root \
+                -p$MYSQL_ROOT_PASSWORD \
+                --single-transaction \
+                --quick \
+                --lock-tables=false \
+                --routines \
+                --triggers \
+                --events \
+                --all-databases \
+                --add-drop-database \
+                --add-drop-table \
+                --hex-blob \
+                | gzip -9 > $BACKUP_FILE
+
+              # Prüfe ob Backup erfolgreich
+              if [ $? -eq 0 ]; then
+                BACKUP_SIZE=$(du -h $BACKUP_FILE | cut -f1)
+                echo "✓ Backup completed successfully!"
+                echo "  File: $BACKUP_FILE"
+                echo "  Size: $BACKUP_SIZE"
+              else
+                echo "✗ Backup failed!"
+                exit 1
+              fi
+
+              # Cleanup: Alte Backups löschen
+              echo ""
+              echo "Cleaning up old backups (older than $BACKUP_RETENTION_DAYS days)..."
+              DELETED_COUNT=$(find /backup -name "nextcloud-*.sql.gz" -type f -mtime +$BACKUP_RETENTION_DAYS -delete -print | wc -l)
+              echo "✓ Deleted $DELETED_COUNT old backup(s)"
+
+              # Backup-Liste anzeigen
+              echo ""
+              echo "Current backups:"
+              ls -lh /backup/nextcloud-*.sql.gz 2>/dev/null || echo "  No backups found"
+
+              echo ""
+              echo "=== Backup Completed Successfully ==="
+
+            # Volume Mounts
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /backup
+
+          # Volumes
+          volumes:
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: backup-storage
+
+---
+# Optional: Nextcloud Maintenance Mode Job
+# Aktiviert Maintenance Mode während Backup (empfohlen für Konsistenz)
+# apiVersion: batch/v1
+# kind: CronJob
+# metadata:
+#   name: nextcloud-backup-with-maintenance
+#   namespace: nextcloud-prod
+# spec:
+#   schedule: "0 2 * * *"
+#   jobTemplate:
+#     spec:
+#       template:
+#         spec:
+#           containers:
+#           - name: backup
+#             image: docker.io/library/mariadb:10.11
+#             command:
+#             - /bin/bash
+#             - -c
+#             - |
+#               # Maintenance Mode aktivieren
+#               kubectl exec -n nextcloud-prod deployment/nextcloud -- \
+#                 su -s /bin/bash www-data -c "php occ maintenance:mode --on"
+#
+#               # Backup durchführen
+#               mysqldump ... | gzip > /backup/...
+#
+#               # Maintenance Mode deaktivieren
+#               kubectl exec -n nextcloud-prod deployment/nextcloud -- \
+#                 su -s /bin/bash www-data -c "php occ maintenance:mode --off"

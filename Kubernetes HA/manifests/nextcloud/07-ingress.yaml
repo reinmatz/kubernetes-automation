@@ -1,0 +1,99 @@
+---
+# Nextcloud Ingress - HTTPS mit TLS
+# Erfordert:
+# - Nginx Ingress Controller
+# - Cert-Manager (für automatische Zertifikate)
+# - DNS-Eintrag: nextcloud.yourdomain.com → Ingress-IP
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+
+  annotations:
+    # Ingress Class
+    kubernetes.io/ingress.class: nginx
+
+    # Cert-Manager: Automatische TLS-Zertifikat-Erstellung
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"  # Oder: selfsigned-issuer
+
+    # Nginx-spezifische Einstellungen
+    nginx.ingress.kubernetes.io/proxy-body-size: "10g"  # Max. 10GB Uploads
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+
+    # Timeouts für große Datei-Uploads
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+
+    # HSTS (HTTP Strict Transport Security)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Nextcloud-spezifische Redirects (CalDAV/CardDAV)
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location = /.well-known/carddav {
+        return 301 $scheme://$host/remote.php/dav;
+      }
+      location = /.well-known/caldav {
+        return 301 $scheme://$host/remote.php/dav;
+      }
+      location = /.well-known/webfinger {
+        return 301 $scheme://$host/index.php/.well-known/webfinger;
+      }
+      location = /.well-known/nodeinfo {
+        return 301 $scheme://$host/index.php/.well-known/nodeinfo;
+      }
+
+    # Rate Limiting (optional, schützt vor Brute-Force)
+    # nginx.ingress.kubernetes.io/limit-rps: "10"
+    # nginx.ingress.kubernetes.io/limit-connections: "20"
+
+spec:
+  ingressClassName: nginx
+
+  # TLS-Konfiguration
+  tls:
+  - hosts:
+    - nextcloud.yourdomain.com  # ← ÄNDERN zu Ihrer Domain!
+    secretName: nextcloud-tls-secret  # Wird von Cert-Manager erstellt
+
+  # Routing-Regeln
+  rules:
+  - host: nextcloud.yourdomain.com  # ← ÄNDERN zu Ihrer Domain!
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nextcloud  # Service-Name
+            port:
+              number: 80
+
+---
+# Alternative: Ingress ohne TLS (nur für Testing!)
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: nextcloud-http
+#   namespace: nextcloud-prod
+#   annotations:
+#     nginx.ingress.kubernetes.io/proxy-body-size: "10g"
+#     nginx.ingress.kubernetes.io/ssl-redirect: "false"
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#   - host: nextcloud.local
+#     http:
+#       paths:
+#       - path: /
+#         pathType: Prefix
+#         backend:
+#           service:
+#             name: nextcloud
+#             port:
+#               number: 80

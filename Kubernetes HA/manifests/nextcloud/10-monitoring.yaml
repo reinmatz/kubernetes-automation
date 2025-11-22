@@ -1,0 +1,180 @@
+---
+# ServiceMonitor für Prometheus
+# Erfordert Prometheus Operator installiert im Cluster
+# Scraped Metriken von Nextcloud und MariaDB
+
+# 1. Nextcloud ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    release: prometheus  # Wichtig: Muss mit Prometheus Operator Label übereinstimmen
+spec:
+  selector:
+    matchLabels:
+      app: nextcloud
+
+  endpoints:
+  - port: http
+    interval: 30s  # Scrape alle 30 Sekunden
+    path: /ocs/v2.php/apps/serverinfo/api/v1/info?format=json
+    scheme: http
+    honorLabels: true
+
+    # Authentifizierung (falls erforderlich)
+    # basicAuth:
+    #   username:
+    #     name: nextcloud-monitoring-secret
+    #     key: username
+    #   password:
+    #     name: nextcloud-monitoring-secret
+    #     key: password
+
+---
+# 2. MariaDB ServiceMonitor
+# Hinweis: MariaDB benötigt mysqld-exporter für Prometheus-Metriken
+# Siehe unten für mysqld-exporter Deployment
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mariadb
+  namespace: nextcloud-prod
+  labels:
+    app: mariadb
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: mariadb-exporter  # Auf mysqld-exporter Service
+
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    scheme: http
+
+---
+# Optional: mysqld-exporter Deployment
+# Exportiert MariaDB-Metriken für Prometheus
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: mariadb-exporter
+#   namespace: nextcloud-prod
+#   labels:
+#     app: mariadb-exporter
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: mariadb-exporter
+#   template:
+#     metadata:
+#       labels:
+#         app: mariadb-exporter
+#     spec:
+#       containers:
+#       - name: exporter
+#         image: prom/mysqld-exporter:latest
+#         ports:
+#         - containerPort: 9104
+#           name: metrics
+#         env:
+#         - name: DATA_SOURCE_NAME
+#           valueFrom:
+#             secretKeyRef:
+#               name: mariadb-exporter-secret
+#               key: data_source_name
+#         # Format: user:password@tcp(mariadb:3306)/
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: mariadb-exporter
+#   namespace: nextcloud-prod
+#   labels:
+#     app: mariadb-exporter
+# spec:
+#   type: ClusterIP
+#   ports:
+#   - port: 9104
+#     targetPort: 9104
+#     protocol: TCP
+#     name: metrics
+#   selector:
+#     app: mariadb-exporter
+
+---
+# PrometheusRule - Alerts für Nextcloud
+# Definiert Alarm-Regeln
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nextcloud-alerts
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    release: prometheus
+spec:
+  groups:
+  - name: nextcloud
+    interval: 30s
+    rules:
+    # Alert: Nextcloud-Pod down
+    - alert: NextcloudPodDown
+      expr: up{job="nextcloud"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Nextcloud Pod {{ $labels.pod }} is down"
+        description: "Nextcloud pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been down for more than 5 minutes."
+
+    # Alert: Hohe CPU-Auslastung
+    - alert: NextcloudHighCPU
+      expr: |
+        sum(rate(container_cpu_usage_seconds_total{namespace="nextcloud-prod",pod=~"nextcloud-.*"}[5m])) by (pod)
+        > 1.5
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage on {{ $labels.pod }}"
+        description: "Nextcloud pod {{ $labels.pod }} is using more than 1.5 CPU cores for 10 minutes."
+
+    # Alert: Hohe Memory-Auslastung
+    - alert: NextcloudHighMemory
+      expr: |
+        sum(container_memory_working_set_bytes{namespace="nextcloud-prod",pod=~"nextcloud-.*"}) by (pod)
+        > 1.5 * 1024 * 1024 * 1024
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage on {{ $labels.pod }}"
+        description: "Nextcloud pod {{ $labels.pod }} is using more than 1.5GB memory."
+
+    # Alert: MariaDB down
+    - alert: MariaDBDown
+      expr: up{job="mariadb"} == 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "MariaDB is down"
+        description: "MariaDB has been down for more than 2 minutes."
+
+    # Alert: Zu viele Nextcloud-Pod-Restarts
+    - alert: NextcloudFrequentRestarts
+      expr: |
+        rate(kube_pod_container_status_restarts_total{namespace="nextcloud-prod",pod=~"nextcloud-.*"}[15m])
+        > 0.5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Frequent pod restarts for {{ $labels.pod }}"
+        description: "Nextcloud pod {{ $labels.pod }} is restarting frequently."

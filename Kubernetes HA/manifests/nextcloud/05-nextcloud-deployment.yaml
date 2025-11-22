@@ -1,0 +1,217 @@
+---
+# Nextcloud Deployment - High Availability Configuration
+# 3 Replicas für:
+# - Hochverfügbarkeit (HA)
+# - Load Balancing
+# - Rolling Updates ohne Downtime
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    tier: frontend
+    component: application
+spec:
+  replicas: 3  # 3 Pods für HA
+
+  # Update-Strategie: Rolling Update ohne Downtime
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Max. 1 zusätzlicher Pod während Update (total 4)
+      maxUnavailable: 0  # Kein Pod darf unavailable sein (keine Downtime!)
+
+  selector:
+    matchLabels:
+      app: nextcloud
+      tier: frontend
+
+  template:
+    metadata:
+      labels:
+        app: nextcloud
+        tier: frontend
+      annotations:
+        # Prometheus Scraping (wenn ServiceMonitor nicht verwendet wird)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/ocs/v2.php/apps/serverinfo/api/v1/info?format=json"
+
+    spec:
+      # Pod Anti-Affinity - Verteile Pods auf verschiedene Nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: nextcloud
+              topologyKey: kubernetes.io/hostname
+
+      # Security Context
+      securityContext:
+        fsGroup: 33  # www-data User-ID
+        runAsUser: 33
+        runAsNonRoot: true
+
+      containers:
+      - name: nextcloud
+        image: docker.io/library/nextcloud:28-apache
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+
+        # Environment-Variablen
+        env:
+        # Datenbank-Verbindung (aus Secret)
+        - name: MYSQL_HOST
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_HOST
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_DATABASE
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_USER
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_PASSWORD
+
+        # Nextcloud-Konfiguration
+        - name: NEXTCLOUD_ADMIN_USER
+          value: "admin"
+        - name: NEXTCLOUD_ADMIN_PASSWORD
+          value: "changeme123"  # ⚠️ ÄNDERN oder aus Secret laden!
+
+        - name: NEXTCLOUD_TRUSTED_DOMAINS
+          value: "localhost nextcloud.local nextcloud.yourdomain.com"  # ← ANPASSEN!
+
+        - name: APACHE_DISABLE_REWRITE_IP
+          value: "1"
+
+        # PHP-Tuning
+        - name: PHP_MEMORY_LIMIT
+          value: "512M"
+        - name: PHP_UPLOAD_LIMIT
+          value: "10G"
+
+        # Optional: Redis für Session-Storage und Caching
+        # - name: REDIS_HOST
+        #   value: "redis"
+        # - name: REDIS_HOST_PORT
+        #   value: "6379"
+
+        # Optional: SMTP für E-Mail-Versand
+        # - name: SMTP_HOST
+        #   value: "smtp.example.com"
+        # - name: SMTP_PORT
+        #   value: "587"
+        # - name: SMTP_NAME
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: nextcloud-smtp
+        #       key: username
+        # - name: SMTP_PASSWORD
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: nextcloud-smtp
+        #       key: password
+
+        # Resource Management
+        resources:
+          requests:
+            cpu: 500m       # Garantierte 0.5 CPU-Cores
+            memory: 512Mi   # Garantierte 512 MB RAM
+          limits:
+            cpu: 2000m      # Maximum 2 CPU-Cores
+            memory: 2Gi     # Maximum 2 GB RAM
+
+        # Liveness Probe - Ist Container am Leben?
+        livenessProbe:
+          httpGet:
+            path: /status.php
+            port: 80
+            httpHeaders:
+            - name: Host
+              value: "localhost"
+          initialDelaySeconds: 60  # Nextcloud braucht Zeit zum Starten
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Readiness Probe - Ist Container bereit für Traffic?
+        readinessProbe:
+          httpGet:
+            path: /status.php
+            port: 80
+            httpHeaders:
+            - name: Host
+              value: "localhost"
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Startup Probe - Für langsam startende Container
+        startupProbe:
+          httpGet:
+            path: /status.php
+            port: 80
+            httpHeaders:
+            - name: Host
+              value: "localhost"
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30  # Max. 150s (30 × 5s) für Startup
+
+        # Volume Mounts
+        volumeMounts:
+        - name: nextcloud-data
+          mountPath: /var/www/html
+
+        # Optional: Custom PHP-Konfiguration
+        # - name: php-config
+        #   mountPath: /usr/local/etc/php/conf.d/custom.ini
+        #   subPath: custom.ini
+
+      volumes:
+      - name: nextcloud-data
+        persistentVolumeClaim:
+          claimName: nextcloud-data
+
+      # Optional: Custom PHP Config
+      # - name: php-config
+      #   configMap:
+      #     name: nextcloud-php-config
+
+---
+# Optional: Nextcloud PHP ConfigMap
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: nextcloud-php-config
+#   namespace: nextcloud-prod
+# data:
+#   custom.ini: |
+#     memory_limit = 512M
+#     upload_max_filesize = 10G
+#     post_max_size = 10G
+#     max_execution_time = 3600
+#     max_input_time = 3600

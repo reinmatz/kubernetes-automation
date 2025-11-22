@@ -1,0 +1,38 @@
+---
+# PersistentVolumeClaim für Nextcloud-Dateien
+# RWX (ReadWriteMany) erforderlich für mehrere Pods
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nextcloud-data
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    tier: frontend
+spec:
+  accessModes:
+  - ReadWriteMany  # Mehrere Nextcloud-Pods greifen auf dieselben Dateien zu
+  resources:
+    requests:
+      storage: 50Gi  # Anpassen je nach Bedarf
+  # storageClassName: nfs-client  # Optional: Spezifische StorageClass angeben
+  # Wenn nicht angegeben: Standard-StorageClass wird verwendet
+
+---
+# PersistentVolumeClaim für Backups
+# Wird vom Backup-CronJob verwendet
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-storage
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    component: backup
+spec:
+  accessModes:
+  - ReadWriteOnce  # Nur Backup-Job benötigt Zugriff
+  resources:
+    requests:
+      storage: 100Gi  # Sollte größer sein als Datenbank + Nextcloud-Daten
+  # storageClassName: local-path  # Optional

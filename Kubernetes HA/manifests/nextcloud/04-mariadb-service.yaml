@@ -1,0 +1,49 @@
+---
+# MariaDB Service - Interner Zugriff für Nextcloud
+# ClusterIP = Nur innerhalb des Clusters erreichbar
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: nextcloud-prod
+  labels:
+    app: mariadb
+    tier: database
+spec:
+  type: ClusterIP  # Intern (kein externer Zugriff)
+  clusterIP: None  # Headless Service (für StatefulSet DNS)
+
+  ports:
+  - port: 3306
+    targetPort: 3306
+    protocol: TCP
+    name: mysql
+
+  selector:
+    app: mariadb  # Alle Pods mit diesem Label
+
+  # Session Affinity (optional, für Sticky Sessions)
+  # sessionAffinity: ClientIP
+  # sessionAffinityConfig:
+  #   clientIP:
+  #     timeoutSeconds: 10800
+
+---
+# Optional: Zusätzlicher ClusterIP Service für externe Tools
+# (z.B. phpMyAdmin, Adminer)
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: mariadb-clusterip
+#   namespace: nextcloud-prod
+#   labels:
+#     app: mariadb
+# spec:
+#   type: ClusterIP
+#   ports:
+#   - port: 3306
+#     targetPort: 3306
+#     protocol: TCP
+#     name: mysql
+#   selector:
+#     app: mariadb

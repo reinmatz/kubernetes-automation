@@ -1,0 +1,154 @@
+---
+# MariaDB StatefulSet - Production-Ready Datenbank
+# StatefulSet statt Deployment für:
+# - Stabile Pod-Identität (mariadb-0, mariadb-1, ...)
+# - Jeder Pod bekommt eigenen PVC
+# - Sequentielles Startup/Shutdown
+# - Ideal für Datenbanken
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  namespace: nextcloud-prod
+  labels:
+    app: mariadb
+    tier: database
+    component: database
+spec:
+  serviceName: mariadb  # Headless Service (wird separat erstellt)
+  replicas: 1  # Single Instance (für HA: Master-Slave Replikation konfigurieren)
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+        tier: database
+    spec:
+      # Security Context
+      securityContext:
+        fsGroup: 999  # mysql User-ID
+        runAsUser: 999
+        runAsNonRoot: true
+
+      containers:
+      - name: mariadb
+        image: docker.io/library/mariadb:10.11
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - containerPort: 3306
+          name: mysql
+          protocol: TCP
+
+        # Environment-Variablen aus Secret
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_ROOT_PASSWORD
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_DATABASE
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_USER
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nextcloud-db
+              key: MYSQL_PASSWORD
+
+        # MariaDB-spezifische Konfiguration
+        - name: MYSQL_INITDB_SKIP_TZINFO
+          value: "1"
+
+        # Resource Management
+        resources:
+          requests:
+            cpu: 500m       # Garantierte 0.5 CPU-Cores
+            memory: 512Mi   # Garantierte 512 MB RAM
+          limits:
+            cpu: 2000m      # Maximum 2 CPU-Cores
+            memory: 4Gi     # Maximum 4 GB RAM
+
+        # Liveness Probe - Ist Container am Leben?
+        # Bei Fehler: Container wird neu gestartet
+        livenessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - "mysqladmin ping -u root -p$MYSQL_ROOT_PASSWORD"
+          initialDelaySeconds: 30  # Warte 30s nach Container-Start
+          periodSeconds: 10        # Prüfe alle 10 Sekunden
+          timeoutSeconds: 5        # Timeout nach 5 Sekunden
+          failureThreshold: 3      # Nach 3 Fehlern neu starten
+          successThreshold: 1
+
+        # Readiness Probe - Ist Container bereit für Traffic?
+        # Bei Fehler: Pod wird aus Service-Endpoints entfernt
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - "mysql -u root -p$MYSQL_ROOT_PASSWORD -e 'SELECT 1'"
+          initialDelaySeconds: 10  # Warte 10s nach Container-Start
+          periodSeconds: 5         # Prüfe alle 5 Sekunden
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Volume Mounts
+        volumeMounts:
+        - name: mariadb-data
+          mountPath: /var/lib/mysql
+
+        # Optional: Custom MariaDB-Konfiguration
+        # - name: mariadb-config
+        #   mountPath: /etc/mysql/conf.d
+
+      # Optional: Custom Config Volume
+      # volumes:
+      # - name: mariadb-config
+      #   configMap:
+      #     name: mariadb-config
+
+  # VolumeClaimTemplates - Automatische PVC-Erstellung pro Pod
+  # Pod mariadb-0 → PVC mariadb-data-mariadb-0
+  # Pod mariadb-1 → PVC mariadb-data-mariadb-1
+  volumeClaimTemplates:
+  - metadata:
+      name: mariadb-data
+      labels:
+        app: mariadb
+    spec:
+      accessModes:
+      - ReadWriteOnce  # RWO: Nur von einem Node nutzbar (ideal für Datenbanken)
+      resources:
+        requests:
+          storage: 20Gi  # 20 GB für Datenbank-Daten
+      # storageClassName: local-path  # Optional
+
+---
+# Optional: MariaDB ConfigMap für Custom-Konfiguration
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: mariadb-config
+#   namespace: nextcloud-prod
+# data:
+#   custom.cnf: |
+#     [mysqld]
+#     max_connections = 500
+#     innodb_buffer_pool_size = 2G
+#     innodb_log_file_size = 512M
+#     query_cache_size = 0
+#     query_cache_type = 0

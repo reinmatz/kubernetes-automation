@@ -1,0 +1,11 @@
+---
+# Namespace für Nextcloud Production Environment
+# Isoliert alle Nextcloud-Ressourcen von anderen Anwendungen
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nextcloud-prod
+  labels:
+    name: nextcloud-prod
+    environment: production
+    app: nextcloud

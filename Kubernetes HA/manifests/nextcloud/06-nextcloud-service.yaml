@@ -1,0 +1,76 @@
+---
+# Nextcloud Service - Load Balancer für externen Zugriff
+# Typ: LoadBalancer (MetalLB weist externe IP zu)
+# Alternative: ClusterIP (wenn nur Ingress verwendet wird)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    tier: frontend
+  annotations:
+    # MetalLB-spezifische Annotations (optional)
+    # metallb.universe.tf/address-pool: nextcloud-pool
+    # metallb.universe.tf/allow-shared-ip: "true"
+
+    # Prometheus Service Discovery
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "80"
+
+spec:
+  type: LoadBalancer  # Externe IP via MetalLB
+
+  # Optional: Spezifische IP anfordern
+  # loadBalancerIP: 192.168.100.200
+
+  # Optional: Source IP Preservation
+  # externalTrafficPolicy: Local  # Behält Client-IP (empfohlen für Logging)
+
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+
+  # Optional: HTTPS-Port (wenn TLS-Terminierung im Pod)
+  # - port: 443
+  #   targetPort: 443
+  #   protocol: TCP
+  #   name: https
+
+  selector:
+    app: nextcloud
+    tier: frontend
+
+  # Session Affinity (Sticky Sessions)
+  # Wichtig für Nextcloud, wenn kein Redis für Sessions verwendet wird
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 Stunden
+
+---
+# Alternative: ClusterIP Service (wenn nur Ingress verwendet wird)
+# Verwenden Sie diesen, wenn Sie NICHT direkt via LoadBalancer zugreifen wollen
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: nextcloud-clusterip
+#   namespace: nextcloud-prod
+#   labels:
+#     app: nextcloud
+# spec:
+#   type: ClusterIP
+#   ports:
+#   - port: 80
+#     targetPort: 80
+#     protocol: TCP
+#     name: http
+#   selector:
+#     app: nextcloud
+#   sessionAffinity: ClientIP
+#   sessionAffinityConfig:
+#     clientIP:
+#       timeoutSeconds: 10800
