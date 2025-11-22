@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: mydb
+  name: mydb
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: mydb
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: mydb
+    spec:
+      containers:
+      - env:
+        - name: MARIADB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: MARIADB_ROOT_PASSWORD
+              name: mydb
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: MYSQL_ROOT_PASSWORD
+              name: mydb
+        image: registry.redhat.io/rhel9/mariadb-1011
+        imagePullPolicy: Always
+        name: mariadb
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/lib/mysql
+          name: mydb-data
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: mydb-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi

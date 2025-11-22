@@ -452,20 +452,233 @@ spec:
           storage: 5Gi
 ``
 
-  324  kubectl delete -f mydb-statefulset.yaml 
+  323  kubectl delete deployments.apps mymariadb 
   325  kubectl create -f mydb-statefulset.yaml 
   326  kubectl get pods,pvc
 
+**Metrics**
 
+  339  cp /mnt/c/Users/Administrator/Downloads/components-insecure-tls.yaml .
+  340  kubectl create -f components-insecure-tls.yaml 
+  341  kubectl top pods
+  343  kubectl top node
+  344  kubectl top pods
+  345  cd 
+  346  kubectl describe node docker-desktop
 
+vmstat 1
 
+cd /proc/1139 
+cat_oomscore
 
+``
+        resources:
+          limits:
+            cpu: 500m
+            memory: 300Mi
+``
 
+student@SR15-22:~/projects/mymariadb$ kubectl replace -f mydb-statefulset.yaml 
 
-
-
-
+student@SR15-22:~/projects/mymariadb$ kubectl describe pods mymariadb-0 | grep -i -A5 limits
 	
+
+oc set resources deployment myhttpd --limits cpu=1,memory=1Gi --requests cpu=500,memory=100Mi
+
+**Quota auf namespace**
+
+student@SR15-22:~$ kubectl create quota myhttpd --hard limits.cpu=5,requests.cpu=3,limits.memory=5Gi,requests.memory=1Gi,pods=10
+student@SR15-22:~$ kubectl describe resourcequotas myhttpd 
+
+
+
+---
+
+  404  echo **verry verry verbose**
+  405  kubectl -v10 get pods
+  406  echo **verry verry verbose**
+  407  kubectl config set-context docker-desktop --namespace rma-myfirst
+  408* 
+  409  kubectl get namespaces 
+  410  kubectl config set-context docker-desktop --namespace rma-myfirst
+  411  kubectl get pods -o wide
+  412  kubectl get pods 
+  413  kubectl get pods -o wide
+  414  kubectl describe svc myhttpd 
+  415  kubectl get pods --show-labels 
+  416  kubectl edit deployments.apps 
+  417  kubectl describe svc myhttpd 
+  418  echo *probe*
+  419  oc set probe
+  420  oc set probe --help
+  421  oc set probe deployment/myhttpd --readiness -get-url=http://:8080/index.html --initial-delay-seconds 10
+  422  oc set probe deployment/myhttpd --readiness --get-url=http://:8080/index.html --initial-delay-seconds 10
+  423  oc get pods -w
+  424  oc get events
+  425  oc set resources deployment/mhttpd --limits cpu=500m,memory=200M --requests cpu=100m,memory=50M
+  426  oc set resources deployment/myhttpd --limits cpu=500m,memory=200M --requests cpu=100m,memory=50M
+  427  oc get events
+  428* kubectl 
+  429  oc get events
+  430  oc get pods -w
+  431  oc set probe deployment/myhttpd --readiness --get-url=http://:8080/index.html --initial-delay-seconds 5
+  432  oc get pods -w
+  433  oc set probe deployment/myhttpd --readiness --get-url=http://:8080/index.html --initial-delay-seconds 5
+  434  oc get pods -w
+  435  kubectl exec -it myhttpd-86658f4b46-nnnnn -- bash
+  436  oc get pods -w
+  437  kubectl exec -it myhttpd-86658f4b46-nnnnn -- bash
+  438  oc get pods -w
+  439  oc set probe deployment/myhttpd --liveness --get-url=http://:8080/index.html
+  440  kubectl exec -it myhttpd-86658f4b46-nnnnn -- bash
+  441  oc get pods
+  442  kubectl exec -it myhttpd-d85f48795-2l2sb  -- bash
+  443  oc get pods
+  444  oc get pods -w
+
+**hba autoscale**
+count of pods * request.cpu * 80%
+
+auslastung rzeugen -->  md5sum /dev/zero &
+  447  kubectl autoscale deployment myhttpd --cpu-percent 80 --min 2 --max 10
+  448  kubectlget hba
+  449  kubectlget hpa
+  450  kubectl get  hpa
+  451  kubectl get hpa
+  452  kubectl top pods --sum
+  453  kubectl exec  -it myhttpd-d85f48795-4rzrs -- bash
+  454  kubectl describe pod myhttpd-d85f48795-4rzrs | grep -i -A5 limits
+  455  kubectl top pods --sum
+  456  cd 
+  457  kubectl scale deployment myhttpd --replicas 2
+  458  kubectl scale deployment myhttpd --replicas 1
+  459  kubectl top pods --sum
+  460  kubectl top pods 
+  461  kubectl exec -it myhttpd-d85f48795-flt88 -- bash
+  462  kubectl top pods 
+  463  kubectl exec -it myhttpd-d85f48795-v7mvx -- bash
+  464  kubectl top pods 
+  465  kubectl get pods -w
+  471  kubectl delete pod myhttpd-d85f48795-flt88 
+  472  kubectl top pods
+
+
+# Nextcloud Beispiel
+
+docker_compose.yaml
+
+volumes:
+  nextcloud:
+  db:
+
+services:
+  db:
+    image: mariadb:10.6
+    restart: always
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    volumes:
+      - db:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=
+      - MYSQL_PASSWORD=
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+
+  app:
+    image: nextcloud
+    restart: always
+    ports:
+      - 8080:80
+    links:
+      - db
+    volumes:
+      - nextcloud:/var/www/html
+    environment:
+      - MYSQL_PASSWORD=
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_HOST=db
+
+
+Migragtionsschritte für Kubernetes
+1 x Namespace
+1 x Deployment (nextcloud) + Probes
+1 x StatefulSet (MariaDB) + Probes
+2 x PVC (nextcloud, MariaDB)
+1 x secret (Environments)
+2 x service (nextcloud, MariaDB)
+1 x ingress (nextcloud)
+
+Optional:
+resourcequotas
+limitrange
+hpa
+networkpolicy
+
+
+
+  490  echo **MariaDB**
+  491  kubectl create namespace rma-nextcloud
+  492  kubectl config set-context docker-desktop --namespace rma-nextcloud
+  493  read -s -p 'passwort '
+  500  kubectl create secret generic nextcloud --from-literal MYSQL_ROOT_PASSWORD=$REPLY --from-literal MYSQL_PASSWORD=$REPLY --from-literal MYSQL_DATABASE=nextcloud --from-literal  MYSQL_USER=nextcloud --from-literal MYSQL_HOST=MariaDB
+  501  kubectl create deployment mariadb --image docker.io/library/mariadb:10.6
+  502  kubectl set env deployment mariadb --from secret/nextcloud
+  503  oc set volumes deployment mariadb --add --name mariadb-data -t pvc --claim-name mariadb --claim-size 5Gi --claim-mode rwo --mount-path /var/lib/mysql
+  504  oc get pods,pvc
+  505  kubectl expose deployment mariadb --port 3306
+  507  echo **nextcloud**
+  508  kubectl create deployment nextcloud --image docker.io/library/nextcloud:32.0.2-apache
+  509  kubectl set env deployment nextcloud --from secret/nextcloud
+  510  oc set volumes deployment nextcloud  --add --name nextcloud-data -t pvc --claim-name nextcloud --claim-size 5Gi --claim-mode rwm --mount-path /var/www/html
+  511  oc get pods,pvc
+  512  kubectl expose deployment nextcloud --port 80
+  513  kubectl create ingress nextcloud --class nginx --rule "nextcloud.myfirst.local/*=nextcloud:80"
+  514  oc get pods,pvc,ing
+  515  ip a s
+
+
+
+**Netzwerkpolicy**
+oc descreve networkpolicies.k8s.io allow-MariaDB -o yaml
+oc get networdkpolicies.networking.k8s.io allow-8080 -o yaml
+
+oc get networkpolicies.networking.k8s.io
+	NAME		POD-SELECTOR	AGE
+	allow-8080 	app=nextcloud
+	allow-MariaDB 	name=MariaDB
+	deny-by-default	<none>
+
+**Backup Restore**
+student@SR15-22:~/setup/dashboard$ kubectl get -o yaml cm,deploy,service,ingress,pvc,hpa myhttpd > myhttpd-myhttpd-limitrange.yaml
+
+yaml bereinigen
+In metadata nur name und namespace behalten
+
+cluster IP löschen
+
+status immer löschen
+
+Ingress: hostname
+
+resource
+kubectl create -f myhttpd-myhttpd-limitrange.yaml
+kubectl create -f .
+
+Jitsi, Helm
+
+mkdir -p kustomize/{base,overlays/{test,devel,prod}}
+
+
+
+
+
+
+
+
+
+
+
 
 
 
