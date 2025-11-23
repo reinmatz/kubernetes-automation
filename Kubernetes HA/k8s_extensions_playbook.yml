@@ -1,0 +1,261 @@
+---
+# Kubernetes Extensions Deployment - für Ausführung IM Cluster
+# Usage: ansible-playbook k8s_extensions_playbook.yml -t "cert-manager,monitoring"
+
+- name: "Deploy Kubernetes Extensions"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    # MetalLB
+    metallb_enabled: true
+    metallb_ip_range: "192.168.100.200-192.168.100.210"
+
+    # Monitoring
+    prometheus_enabled: true
+    prometheus_retention: "30d"
+    prometheus_scrape_interval: "30s"
+    prometheus_evaluation_interval: "30s"
+
+    # Grafana
+    grafana_enabled: true
+    grafana_admin_user: "admin"
+    grafana_admin_password: "ChangeMe123!"
+
+    # Loki Logging
+    loki_enabled: true
+    loki_retention: "7d"
+
+    # Cert-Manager
+    cert_manager_enabled: true
+    cert_manager_email: "admin@cluster.local"
+
+    # Nginx Ingress
+    nginx_ingress_enabled: true
+
+  tasks:
+    - name: "Display configuration"
+      debug:
+        msg: |
+          Deploying Extensions:
+          - MetalLB:       {{ metallb_enabled }}
+          - Nginx Ingress: {{ nginx_ingress_enabled }}
+          - Monitoring:    {{ prometheus_enabled }}
+          - Logging:       {{ loki_enabled }}
+          - Cert-Manager:  {{ cert_manager_enabled }}
+      tags: [always]
+
+    # ===== CERT-MANAGER =====
+    - name: "Install Cert-Manager"
+      tags: [cert-manager, security]
+      when: cert_manager_enabled | default(true)
+      block:
+        - name: "Add Jetstack Helm repo"
+          shell: |
+            helm repo add jetstack https://charts.jetstack.io || true
+            helm repo update
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Create cert-manager namespace"
+          shell: kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Install cert-manager CRDs"
+          shell: |
+            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.crds.yaml
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Install Cert-Manager via Helm"
+          shell: |
+            helm upgrade --install cert-manager jetstack/cert-manager \
+              --namespace cert-manager \
+              --wait \
+              --timeout 5m
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Wait for cert-manager pods"
+          shell: |
+            kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Create ClusterIssuers"
+          shell: |
+            cat <<EOF | kubectl apply -f -
+            ---
+            apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata:
+              name: selfsigned
+            spec:
+              selfSigned: {}
+            ---
+            apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata:
+              name: letsencrypt-staging
+            spec:
+              acme:
+                server: https://acme-staging-v02.api.letsencrypt.org/directory
+                email: {{ cert_manager_email }}
+                privateKeySecretRef:
+                  name: letsencrypt-staging-key
+                solvers:
+                  - http01:
+                      ingress:
+                        class: nginx
+            ---
+            apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata:
+              name: letsencrypt-prod
+            spec:
+              acme:
+                server: https://acme-v02.api.letsencrypt.org/directory
+                email: {{ cert_manager_email }}
+                privateKeySecretRef:
+                  name: letsencrypt-prod-key
+                solvers:
+                  - http01:
+                      ingress:
+                        class: nginx
+            EOF
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Cert-Manager deployed"
+          debug:
+            msg: |
+              ✓ Cert-Manager installed
+              ✓ ClusterIssuers created: selfsigned, letsencrypt-staging, letsencrypt-prod
+
+    # ===== MONITORING (Prometheus + Grafana) =====
+    - name: "Install Monitoring Stack"
+      tags: [monitoring, prometheus, grafana]
+      when: prometheus_enabled | default(true)
+      block:
+        - name: "Add Prometheus Helm repo"
+          shell: |
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+            helm repo update
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Create monitoring namespace"
+          shell: kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Install kube-prometheus-stack"
+          shell: |
+            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+              --namespace monitoring \
+              --set prometheus.prometheusSpec.retention={{ prometheus_retention }} \
+              --set prometheus.prometheusSpec.scrapeInterval={{ prometheus_scrape_interval }} \
+              --set prometheus.prometheusSpec.evaluationInterval={{ prometheus_evaluation_interval }} \
+              --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=10Gi \
+              --set grafana.enabled=true \
+              --set grafana.adminPassword={{ grafana_admin_password }} \
+              --set grafana.adminUser={{ grafana_admin_user }} \
+              --set grafana.persistence.enabled=true \
+              --set grafana.persistence.size=5Gi \
+              --set alertmanager.enabled=true \
+              --wait \
+              --timeout 10m
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Wait for Prometheus pods"
+          shell: |
+            kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s || true
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Wait for Grafana pods"
+          shell: |
+            kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=grafana -n monitoring --timeout=300s || true
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Monitoring deployed"
+          debug:
+            msg: |
+              ✓ Monitoring stack deployed
+              ✓ Prometheus + Grafana + AlertManager installed
+
+              Access Grafana:
+              kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+              Browser: http://localhost:3000
+              Login: {{ grafana_admin_user }} / {{ grafana_admin_password }}
+
+    # ===== LOKI LOGGING =====
+    - name: "Install Loki Logging Stack"
+      tags: [logging, loki]
+      when: loki_enabled | default(true)
+      block:
+        - name: "Add Grafana Helm repo"
+          shell: |
+            helm repo add grafana https://grafana.github.io/helm-charts || true
+            helm repo update
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Create loki namespace"
+          shell: kubectl create namespace loki --dry-run=client -o yaml | kubectl apply -f -
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Install Loki Stack"
+          shell: |
+            helm upgrade --install loki grafana/loki-stack \
+              --namespace loki \
+              --set loki.persistence.enabled=true \
+              --set loki.persistence.size=10Gi \
+              --set promtail.enabled=true \
+              --wait \
+              --timeout 5m
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Loki deployed"
+          debug:
+            msg: |
+              ✓ Loki + Promtail deployed
+              ✓ Logs automatically collected from all pods
+
+    # ===== FINAL STATUS =====
+    - name: "Display Final Status"
+      tags: [always]
+      block:
+        - name: "Get all namespaces"
+          shell: kubectl get namespaces
+          environment:
+            KUBECONFIG: ""
+          register: namespaces
+
+        - name: "Get all pods"
+          shell: kubectl get pods -A | grep -E '(cert-manager|monitoring|loki)'
+          environment:
+            KUBECONFIG: ""
+          register: pods
+          failed_when: false
+
+        - name: "Display status"
+          debug:
+            msg: |
+              ╔═══════════════════════════════════════════════════════╗
+              ║     ✓ Extensions Deployed Successfully!              ║
+              ╠═══════════════════════════════════════════════════════╣
+              ║ Cert-Manager:     ✓ {{ cert_manager_enabled }}
+              ║ Prometheus:       ✓ {{ prometheus_enabled }}
+              ║ Grafana:          ✓ {{ grafana_enabled }}
+              ║ Loki Logging:     ✓ {{ loki_enabled }}
+              ╚═══════════════════════════════════════════════════════╝
+
+              Pods:
+              {{ pods.stdout }}

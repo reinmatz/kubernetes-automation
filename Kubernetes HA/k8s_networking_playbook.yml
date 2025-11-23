@@ -1,0 +1,154 @@
+---
+# Kubernetes Networking Extensions - MetalLB & Nginx Ingress
+# Usage: ansible-playbook k8s_networking_playbook.yml
+
+- name: "Deploy Networking Extensions"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    # MetalLB
+    metallb_enabled: true
+    metallb_namespace: metallb-system
+
+    # Nginx Ingress
+    nginx_ingress_enabled: true
+    nginx_ingress_namespace: ingress-nginx
+
+  tasks:
+    - name: "Display configuration"
+      debug:
+        msg: |
+          Deploying Networking:
+          - MetalLB:       {{ metallb_enabled }}
+          - Nginx Ingress: {{ nginx_ingress_enabled }}
+      tags: [always]
+
+    # ===== NGINX INGRESS CONTROLLER =====
+    - name: "Install Nginx Ingress Controller"
+      tags: [ingress, nginx]
+      when: nginx_ingress_enabled | default(true)
+      block:
+        - name: "Add Nginx Ingress Helm repo"
+          shell: |
+            helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx || true
+            helm repo update
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Create ingress-nginx namespace"
+          shell: kubectl create namespace {{ nginx_ingress_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Install Nginx Ingress Controller"
+          shell: |
+            helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+              --namespace {{ nginx_ingress_namespace }} \
+              --set controller.service.type=NodePort \
+              --set controller.metrics.enabled=true \
+              --set controller.podAnnotations."prometheus\.io/scrape"=true \
+              --set controller.podAnnotations."prometheus\.io/port"=10254 \
+              --set controller.resources.limits.cpu=200m \
+              --set controller.resources.limits.memory=512Mi \
+              --set controller.resources.requests.cpu=100m \
+              --set controller.resources.requests.memory=256Mi \
+              --wait \
+              --timeout 5m
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Wait for Nginx Ingress pods"
+          shell: |
+            kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=ingress-nginx -n {{ nginx_ingress_namespace }} --timeout=300s
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Get Nginx Ingress Service"
+          shell: kubectl get svc -n {{ nginx_ingress_namespace }} ingress-nginx-controller
+          environment:
+            KUBECONFIG: ""
+          register: nginx_svc
+
+        - name: "Nginx Ingress deployed"
+          debug:
+            msg: |
+              ✓ Nginx Ingress Controller deployed
+              ✓ Service Type: NodePort (Docker Desktop)
+
+              Service:
+              {{ nginx_svc.stdout }}
+
+    # ===== METALLB (Optional - nicht für Docker Desktop) =====
+    - name: "Install MetalLB"
+      tags: [metallb, loadbalancer]
+      when: metallb_enabled | default(false)
+      block:
+        - name: "Add MetalLB Helm repo"
+          shell: |
+            helm repo add metallb https://metallb.github.io/metallb || true
+            helm repo update
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Create metallb-system namespace"
+          shell: kubectl create namespace {{ metallb_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Install MetalLB"
+          shell: |
+            helm upgrade --install metallb metallb/metallb \
+              --namespace {{ metallb_namespace }} \
+              --wait \
+              --timeout 5m
+          environment:
+            KUBECONFIG: ""
+
+        - name: "Wait for MetalLB pods"
+          shell: |
+            kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=metallb -n {{ metallb_namespace }} --timeout=300s || true
+          environment:
+            KUBECONFIG: ""
+
+        - name: "MetalLB deployed"
+          debug:
+            msg: |
+              ✓ MetalLB deployed
+              ⚠️  Note: MetalLB requires Layer 2 configuration on real clusters
+              ⚠️  Docker Desktop doesn't support MetalLB LoadBalancer type
+
+    # ===== FINAL STATUS =====
+    - name: "Display Final Status"
+      tags: [always]
+      block:
+        - name: "Get Nginx Ingress resources"
+          shell: kubectl get all -n {{ nginx_ingress_namespace }}
+          environment:
+            KUBECONFIG: ""
+          register: nginx_resources
+          when: nginx_ingress_enabled
+
+        - name: "Get IngressClass"
+          shell: kubectl get ingressclass
+          environment:
+            KUBECONFIG: ""
+          register: ingress_classes
+          when: nginx_ingress_enabled
+
+        - name: "Display status"
+          debug:
+            msg: |
+              ╔═══════════════════════════════════════════════════════╗
+              ║     ✓ Networking Extensions Deployed!                ║
+              ╠═══════════════════════════════════════════════════════╣
+              ║ Nginx Ingress:    ✓ {{ nginx_ingress_enabled }}
+              ║ MetalLB:          ✓ {{ metallb_enabled }}
+              ╚═══════════════════════════════════════════════════════╝
+
+              IngressClasses:
+              {{ ingress_classes.stdout }}
+
+              Nginx Ingress Resources:
+              {{ nginx_resources.stdout }}

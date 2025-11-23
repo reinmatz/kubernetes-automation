@@ -47,7 +47,7 @@ check_prerequisites() {
     fi
 
     # Cluster-Verbindung
-    if ! kubectl cluster-info &> /dev/null; then
+    if ! kubectl cluster-info dump &> /dev/null; then
         log_error "Cannot connect to Kubernetes cluster"
         exit 1
     fi

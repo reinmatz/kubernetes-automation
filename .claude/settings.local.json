@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl get:*)",
+      "Bash(kubectl describe:*)",
+      "Bash(kubectl apply:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(kubectl logs:*)",
+      "Bash(openssl x509:*)",
+      "Bash(open \"https://localhost:31896\")",
+      "Bash(curl:*)",
+      "Bash(kubectl exec:*)",
+      "Bash(open \"http://localhost\")",
+      "Bash(docker info:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

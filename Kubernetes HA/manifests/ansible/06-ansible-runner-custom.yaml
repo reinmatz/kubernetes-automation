@@ -1,0 +1,136 @@
+---
+# Verbessertes Ansible Deployment mit kubectl und Python Kubernetes Module
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible-k8s
+  namespace: ansible
+  labels:
+    app: ansible-k8s
+    version: enhanced
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ansible-k8s
+  template:
+    metadata:
+      labels:
+        app: ansible-k8s
+        version: enhanced
+    spec:
+      serviceAccountName: ansible-operator
+
+      securityContext:
+        fsGroup: 1000
+
+      initContainers:
+      # Install kubectl and dependencies
+      - name: install-tools
+        image: quay.io/ansible/ansible-runner:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /tools/kubectl
+
+          # Install Python Kubernetes module
+          pip3 install --target=/tools/python-libs kubernetes openshift PyYAML jsonpatch
+
+          echo "Tools installed successfully!"
+          ls -la /tools/
+        volumeMounts:
+        - name: tools
+          mountPath: /tools
+
+      containers:
+      - name: ansible
+        image: quay.io/ansible/ansible-runner:latest
+        imagePullPolicy: Always
+
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          # Setup kubectl
+          cp /tools/kubectl /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/kubectl
+
+          # Setup Python path
+          export PYTHONPATH=/tools/python-libs:$PYTHONPATH
+
+          # Install Ansible collections
+          ansible-galaxy collection install kubernetes.core community.general ansible.posix -p /ansible/collections
+
+          # Verify setup
+          echo "=== Ansible Setup ==="
+          ansible --version
+          echo ""
+          echo "=== kubectl Version ==="
+          kubectl version --client
+          echo ""
+          echo "=== Python Kubernetes Module ==="
+          python3 -c "import kubernetes; print('kubernetes module OK')"
+          echo ""
+          echo "=== Collections Installed ==="
+          ansible-galaxy collection list
+
+          echo ""
+          echo "✓ Ansible container ready!"
+          echo "Use: kubectl exec -it -n ansible deployment/ansible-k8s -- /bin/bash"
+
+          # Keep running
+          sleep infinity
+
+        env:
+        - name: ANSIBLE_CONFIG
+          value: "/etc/ansible/ansible.cfg"
+        - name: ANSIBLE_HOST_KEY_CHECKING
+          value: "False"
+        - name: ANSIBLE_FORCE_COLOR
+          value: "True"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        resources:
+          requests:
+            cpu: 300m
+            memory: 768Mi
+          limits:
+            cpu: 1500m
+            memory: 3Gi
+
+        volumeMounts:
+        - name: ansible-config
+          mountPath: /etc/ansible
+          readOnly: true
+        - name: ansible-collections
+          mountPath: /ansible/collections
+        - name: ansible-playbooks
+          mountPath: /ansible/playbooks
+        - name: ansible-inventory
+          mountPath: /ansible/inventory
+        - name: tools
+          mountPath: /tools
+        - name: ssh-keys
+          mountPath: /root/.ssh
+
+        workingDir: /ansible
+
+      volumes:
+      - name: ansible-config
+        configMap:
+          name: ansible-config
+      - name: ansible-collections
+        emptyDir: {}
+      - name: ansible-playbooks
+        emptyDir: {}
+      - name: ansible-inventory
+        emptyDir: {}
+      - name: tools
+        emptyDir: {}
+      - name: ssh-keys
+        emptyDir: {}

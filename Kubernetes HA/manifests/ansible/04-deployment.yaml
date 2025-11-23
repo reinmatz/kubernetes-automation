@@ -1,0 +1,114 @@
+---
+# Ansible Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible
+  namespace: ansible
+  labels:
+    app: ansible
+    component: automation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ansible
+  template:
+    metadata:
+      labels:
+        app: ansible
+        component: automation
+    spec:
+      serviceAccountName: ansible-operator
+
+      # Security Context
+      securityContext:
+        fsGroup: 1000
+
+      containers:
+      - name: ansible
+        image: quay.io/ansible/ansible-runner:latest
+        imagePullPolicy: Always
+
+        # Keep container running
+        command: ["/bin/sh"]
+        args: ["-c", "sleep infinity"]
+
+        # Environment Variables
+        env:
+        - name: ANSIBLE_CONFIG
+          value: "/etc/ansible/ansible.cfg"
+        - name: ANSIBLE_HOST_KEY_CHECKING
+          value: "False"
+        - name: ANSIBLE_FORCE_COLOR
+          value: "True"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        # Resource Limits
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+
+        # Volume Mounts
+        volumeMounts:
+        - name: ansible-config
+          mountPath: /etc/ansible
+          readOnly: true
+
+        - name: ansible-playbooks
+          mountPath: /ansible/playbooks
+
+        - name: ansible-inventory
+          mountPath: /ansible/inventory
+
+        - name: ansible-work
+          mountPath: /ansible/work
+
+        - name: ssh-keys
+          mountPath: /root/.ssh
+          readOnly: false
+
+        # Working Directory
+        workingDir: /ansible
+
+      volumes:
+      # Ansible Configuration
+      - name: ansible-config
+        configMap:
+          name: ansible-config
+
+      # Empty volumes for working data
+      - name: ansible-playbooks
+        emptyDir: {}
+
+      - name: ansible-inventory
+        emptyDir: {}
+
+      - name: ansible-work
+        emptyDir: {}
+
+      # SSH Keys (optional - für SSH zu Nodes)
+      - name: ssh-keys
+        emptyDir: {}
+
+---
+# Persistent Volume Claim - Ansible Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ansible-data
+  namespace: ansible
+  labels:
+    app: ansible
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: local-path

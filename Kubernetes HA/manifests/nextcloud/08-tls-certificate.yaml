@@ -1,0 +1,93 @@
+---
+# Nextcloud TLS Certificate
+# Wird automatisch von Cert-Manager erstellt und erneuert
+#
+# Erneuerung: Automatisch 30 Tage vor Ablauf
+# Gültigkeitsdauer: Selbst-signiert = 90 Tage
+#                   Let's Encrypt = 90 Tage
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nextcloud-tls
+  namespace: nextcloud-prod
+  labels:
+    app: nextcloud
+    component: tls
+
+spec:
+  # Name des Secrets, das erstellt wird
+  secretName: nextcloud-tls-secret
+
+  # Gültigkeitsdauer
+  duration: 2160h  # 90 Tage
+  renewBefore: 720h  # Erneuern 30 Tage vor Ablauf
+
+  # Subject (Zertifikat-Informationen)
+  subject:
+    organizations:
+      - "Nextcloud"
+
+  # Wird als Common Name (CN) verwendet
+  commonName: nextcloud.home16.local
+
+  # DNS-Namen (Subject Alternative Names)
+  dnsNames:
+    - nextcloud.home16.local
+    - www.nextcloud.home16.local
+
+  # Optionale IP-Adressen
+  # ipAddresses:
+  #   - 192.168.100.200
+
+  # ClusterIssuer für Zertifikat-Ausstellung
+  issuerRef:
+    name: selfsigned  # Für lokale/interne Umgebung
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+  # Private Key Konfiguration
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    size: 2048
+    rotationPolicy: Always  # Automatische Key-Rotation bei Erneuerung
+
+  # Verwendungszwecke
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+
+---
+# Alternative: Let's Encrypt Production (für öffentliche Domains)
+# Auskommentieren und anpassen wenn öffentlich erreichbar
+#
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: nextcloud-tls-letsencrypt
+#   namespace: nextcloud-prod
+# spec:
+#   secretName: nextcloud-tls-secret
+#   duration: 2160h
+#   renewBefore: 720h
+#
+#   commonName: nextcloud.yourdomain.com
+#   dnsNames:
+#     - nextcloud.yourdomain.com
+#     - www.nextcloud.yourdomain.com
+#
+#   issuerRef:
+#     name: letsencrypt-prod
+#     kind: ClusterIssuer
+#     group: cert-manager.io
+#
+#   privateKey:
+#     algorithm: RSA
+#     size: 2048
+#
+#   usages:
+#     - digital signature
+#     - key encipherment
+#     - server auth

@@ -17,7 +17,8 @@ metadata:
     kubernetes.io/ingress.class: nginx
 
     # Cert-Manager: Automatische TLS-Zertifikat-Erstellung
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"  # Oder: selfsigned-issuer
+    # HINWEIS: Certificate wird separat in 08-tls-certificate.yaml erstellt
+    # cert-manager.io/cluster-issuer: "selfsigned"
 
     # Nginx-spezifische Einstellungen
     nginx.ingress.kubernetes.io/proxy-body-size: "10g"  # Max. 10GB Uploads
@@ -33,20 +34,9 @@ metadata:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 
-    # Nextcloud-spezifische Redirects (CalDAV/CardDAV)
-    nginx.ingress.kubernetes.io/server-snippet: |
-      location = /.well-known/carddav {
-        return 301 $scheme://$host/remote.php/dav;
-      }
-      location = /.well-known/caldav {
-        return 301 $scheme://$host/remote.php/dav;
-      }
-      location = /.well-known/webfinger {
-        return 301 $scheme://$host/index.php/.well-known/webfinger;
-      }
-      location = /.well-known/nodeinfo {
-        return 301 $scheme://$host/index.php/.well-known/nodeinfo;
-      }
+    # NOTE: CalDAV/CardDAV redirects removed due to snippet restrictions
+    # Nextcloud handles /.well-known redirects internally since v21+
+    # If needed, configure these in Nextcloud's .htaccess or config.php
 
     # Rate Limiting (optional, schützt vor Brute-Force)
     # nginx.ingress.kubernetes.io/limit-rps: "10"
@@ -58,19 +48,30 @@ spec:
   # TLS-Konfiguration
   tls:
   - hosts:
-    - nextcloud.yourdomain.com  # ← ÄNDERN zu Ihrer Domain!
-    secretName: nextcloud-tls-secret  # Wird von Cert-Manager erstellt
+    - nextcloud.home16.local
+    secretName: nextcloud-tls-secret  # Wird von Cert-Manager erstellt (siehe 08-tls-certificate.yaml)
 
   # Routing-Regeln
   rules:
-  - host: nextcloud.yourdomain.com  # ← ÄNDERN zu Ihrer Domain!
-    http:
+  # Default rule (no host) - matches localhost and IP access
+  - http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
             name: nextcloud  # Service-Name
+            port:
+              number: 80
+  # Named host rule
+  - host: nextcloud.home16.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nextcloud
             port:
               number: 80
 

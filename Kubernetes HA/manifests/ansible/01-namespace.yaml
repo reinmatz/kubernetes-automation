@@ -1,0 +1,9 @@
+---
+# Ansible Automation Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ansible
+  labels:
+    name: ansible
+    purpose: automation

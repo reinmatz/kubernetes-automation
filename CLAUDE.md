@@ -28,27 +28,105 @@ This is a **Kubernetes High-Availability (HA) Cluster** documentation and automa
 ## Repository Structure
 
 ```
-/files/
-├── 01_Kubernetes_HA_Manual_Installation.md    # Step-by-step manual setup guide
-├── 02_Kubernetes_HA_Ansible_Automation.md     # Ansible automation guide
-├── 03_Kubernetes_HA_GitOps_Setup.md           # GitOps with Flux CD
-├── README_Ansible_Guide.md                     # Quick start Ansible guide
-├── COMPLETE_SOLUTION_OVERVIEW.md              # Overview of all three parts
-├── Kubernetes_Kurszusammenfassung.md          # German course summary
+/
+├── CLAUDE.md                                   # This file - Claude Code guidance
 │
-├── bootstrap.sh                                # One-liner automation setup script
-├── site_playbook.yml                          # Main Ansible playbook (cluster + extensions)
-├── extensions_playbook.yml                    # Extensions deployment playbook
-├── inventory_hosts.yml                        # Ansible inventory template
+├── Kubernetes HA/                              # Main project directory
+│   ├── manifests/                              # Kubernetes manifests
+│   │   ├── ansible/                            # Ansible container deployment
+│   │   │   ├── 01-namespace.yaml
+│   │   │   ├── 02-serviceaccount-rbac.yaml
+│   │   │   ├── 04-deployment.yaml
+│   │   │   └── 06-ansible-runner-custom.yaml
+│   │   └── nextcloud/                          # Nextcloud HA deployment
+│   │       ├── 05-nextcloud-deployment.yaml
+│   │       ├── 07-ingress.yaml
+│   │       └── 08-tls-certificate.yaml
+│   │
+│   ├── scripts/                                # Helper scripts
+│   │   ├── ansible-k8s.sh                      # Ansible container helper
+│   │   └── backup-nextcloud.sh                 # Nextcloud backup script
+│   │
+│   ├── k8s_extensions_playbook.yml             # Extensions deployment (Cert-Manager, Monitoring, Loki)
+│   ├── k8s_networking_playbook.yml             # Networking deployment (Nginx Ingress)
+│   ├── grafana-certificate-dashboard.json      # Grafana dashboard for cert monitoring
+│   │
+│   └── Documentation/                          # Generated documentation
+│       ├── FINAL_SUMMARY.md                    # Complete project summary
+│       ├── ALL_EXTENSIONS_DEPLOYED.md          # Extensions deployment guide
+│       ├── NEXTCLOUD_TLS_AUTO_RENEWAL.md       # TLS auto-renewal documentation
+│       ├── GRAFANA_SETUP_GUIDE.md              # Grafana setup guide
+│       ├── ANSIBLE_QUICKSTART.md               # Ansible container quickstart
+│       └── DEPLOYMENT_SUCCESS.md               # Deployment details
 │
-├── flux_examples.yaml                         # Flux CD configuration examples
-├── github_workflows.md                        # GitHub Actions CI/CD workflows
-└── gitops_cheatsheet.md                       # Quick reference for GitOps operations
+└── files/                                      # Legacy Ansible automation (for on-premise HA clusters)
+    ├── 01_Kubernetes_HA_Manual_Installation.md
+    ├── 02_Kubernetes_HA_Ansible_Automation.md
+    ├── 03_Kubernetes_HA_GitOps_Setup.md
+    ├── bootstrap.sh
+    ├── site_playbook.yml
+    └── inventory_hosts.yml
 ```
 
 ## Architecture Overview
 
-### Cluster Topology (Default Configuration)
+### Current Docker Desktop Setup (Production-Ready)
+
+The repository contains a fully functional production-ready setup for Docker Desktop Kubernetes:
+
+```
+Deployed Components:
+├─ ansible (namespace)
+│  └─ Ansible Container (kubectl + Helm + Python kubernetes)
+│     - Deployment: ansible-k8s (2/2 Running)
+│     - Tools: kubectl, helm, ansible-playbook
+│     - Purpose: Infrastructure automation from within cluster
+│
+├─ cert-manager (namespace)
+│  ├─ cert-manager (3/3 Running)
+│  ├─ cert-manager-cainjector (1/1 Running)
+│  ├─ cert-manager-webhook (1/1 Running)
+│  └─ ClusterIssuers:
+│     ├─ selfsigned (Ready)
+│     ├─ letsencrypt-staging
+│     └─ letsencrypt-prod
+│
+├─ monitoring (namespace)
+│  ├─ Prometheus (2/2 Running) - Metrics collection
+│  ├─ Grafana (3/3 Running) - Dashboards (Port 3000)
+│  ├─ AlertManager (2/2 Running)
+│  ├─ Kube-State-Metrics (1/1 Running)
+│  └─ Prometheus-Operator (1/1 Running)
+│
+├─ loki (namespace)
+│  ├─ Loki (1/1 Running) - Log aggregation
+│  └─ Promtail (1/1 Running) - Log collection
+│
+├─ ingress-nginx (namespace)
+│  └─ Ingress Controller (1/1 Running)
+│     - NodePort: 80:30209/TCP, 443:31896/TCP
+│     - TLS: Enabled with cert-manager integration
+│
+└─ nextcloud-prod (namespace)
+   ├─ Nextcloud (3/3 Running) - High Availability
+   ├─ MariaDB (1/1 Running)
+   ├─ LoadBalancer Service: http://localhost
+   ├─ Ingress: https://nextcloud.home16.local:31896
+   └─ TLS Certificate:
+      - Auto-created by cert-manager
+      - Auto-renewal: 30 days before expiry
+      - CN: nextcloud.home16.local
+
+Access URLs:
+├─ Nextcloud HTTPS: https://nextcloud.home16.local:31896
+├─ Nextcloud HTTP:  http://localhost
+└─ Grafana:         http://localhost:3000 (admin / ChangeMe123!)
+```
+
+### Cluster Topology (On-Premise HA Configuration)
+
+For traditional on-premise high-availability clusters:
+
 ```
 Control Planes (HA):
 ├─ k8s-cp1: 192.168.100.10 (4CPU/8GB) - First control plane
@@ -86,7 +164,44 @@ Network Configuration:
 
 ## Common Commands
 
-### Ansible Automation
+### Ansible in Kubernetes Container
+
+The project now uses Ansible running as a container inside Kubernetes for automation:
+
+```bash
+# Access Ansible container shell
+./scripts/ansible-k8s.sh shell
+
+# Run ansible commands
+./scripts/ansible-k8s.sh ansible localhost -m ping
+
+# Run kubectl from Ansible container
+./scripts/ansible-k8s.sh kubectl get nodes
+
+# Deploy extensions via Ansible
+kubectl exec -n ansible deployment/ansible-k8s -- sh -c \
+  "cd /ansible && unset KUBECONFIG && ansible-playbook playbooks/k8s_extensions.yml -t cert-manager"
+
+# Deploy specific extensions
+kubectl exec -n ansible deployment/ansible-k8s -- sh -c \
+  "cd /ansible && unset KUBECONFIG && ansible-playbook playbooks/k8s_extensions.yml -t monitoring"
+
+kubectl exec -n ansible deployment/ansible-k8s -- sh -c \
+  "cd /ansible && unset KUBECONFIG && ansible-playbook playbooks/k8s_extensions.yml -t logging"
+
+kubectl exec -n ansible deployment/ansible-k8s -- sh -c \
+  "cd /ansible && unset KUBECONFIG && ansible-playbook playbooks/k8s_networking.yml -t nginx"
+
+# Check Ansible container logs
+./scripts/ansible-k8s.sh logs
+
+# Check Ansible container status
+./scripts/ansible-k8s.sh status
+```
+
+### Legacy Ansible Automation (On-Premise HA Clusters)
+
+For traditional on-premise HA cluster deployments:
 
 ```bash
 # Bootstrap environment (one-time setup)
@@ -102,38 +217,20 @@ ansible-playbook -i inventory/hosts.yml playbooks/cluster.yml -v
 # Deploy only extensions (monitoring, logging, ingress, etc.)
 ansible-playbook -i inventory/hosts.yml playbooks/extensions.yml -v
 
-# Dry-run mode (check what would change)
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check -v
-
 # Deploy specific extensions only
 ansible-playbook -i inventory/hosts.yml playbooks/extensions.yml -t "monitoring,logging" -v
-
-# Validate playbook syntax
-ansible-playbook --syntax-check playbooks/site.yml
-
-# Test SSH connectivity to all nodes
-ansible -i inventory/hosts.yml all -m ping
-
-# Run with extra verbosity (debugging)
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml -vvv
-
-# Limit execution to specific hosts
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml --limit "k8s-cp1" -v
-
-# Start at specific task (resume after failure)
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml --start-at-task "Initialize first Control Plane" -v
 ```
 
 ### Kubernetes Operations
 
 ```bash
-# SSH to first control plane node
-ssh debian@192.168.100.10
-
 # Check cluster health
 kubectl get nodes -o wide
 kubectl get pods -A
 kubectl cluster-info
+
+# Check all namespaces
+kubectl get pods -A | grep -v kube-system
 
 # Check storage
 kubectl get storageclasses
@@ -150,15 +247,31 @@ kubectl get ingress -A
 # View cluster events
 kubectl get events --sort-by='.lastTimestamp'
 
+# Check Ansible container
+kubectl get pods -n ansible
+kubectl logs -n ansible deployment/ansible-k8s
+
 # Check monitoring stack
 kubectl get pods -n monitoring
 kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+# Access: http://localhost:3000 (admin / ChangeMe123!)
 
 # Check logging stack
 kubectl get pods -n loki
 kubectl logs -n loki -f deployment/loki
 
-# Check Flux GitOps
+# Check Cert-Manager
+kubectl get pods -n cert-manager
+kubectl get clusterissuers
+kubectl get certificates -A
+
+# Check Nextcloud with TLS
+kubectl get pods -n nextcloud-prod
+kubectl get ingress -n nextcloud-prod
+kubectl get certificate -n nextcloud-prod
+# Access: https://nextcloud.home16.local:31896
+
+# Check Flux GitOps (if enabled)
 flux get all
 flux logs --follow
 kubectl get gitrepositories -A
@@ -270,7 +383,98 @@ To add new extensions or modify existing ones:
 
 ## Troubleshooting
 
-### Common Issues
+### Docker Desktop / Ansible Container Issues
+
+**Ansible Container Not Starting**:
+```bash
+# Check pod status
+kubectl get pods -n ansible
+
+# Check logs
+kubectl logs -n ansible deployment/ansible-k8s
+
+# Check events
+kubectl describe pod -n ansible -l app=ansible-k8s
+
+# Restart deployment
+kubectl rollout restart deployment/ansible-k8s -n ansible
+```
+
+**Ingress Controller Pending (Insufficient Memory)**:
+```bash
+# Check pod status
+kubectl get pods -n ingress-nginx
+
+# Describe pod to see resource issues
+kubectl describe pod -n ingress-nginx -l app.kubernetes.io/component=controller
+
+# Solution: Increase Docker Desktop memory to 6-8GB
+# Docker Desktop → Settings → Resources → Memory
+
+# After increasing memory, delete pending pod
+kubectl delete pod -n ingress-nginx -l app.kubernetes.io/component=controller
+
+# Verify it starts
+kubectl get pods -n ingress-nginx -w
+```
+
+**HTTPS/TLS Certificate Issues**:
+```bash
+# Check certificate status
+kubectl get certificate -A
+kubectl describe certificate nextcloud-tls -n nextcloud-prod
+
+# Check cert-manager logs
+kubectl logs -n cert-manager -l app=cert-manager --tail=50
+
+# Check certificate secret
+kubectl get secret nextcloud-tls-secret -n nextcloud-prod
+
+# View certificate details
+kubectl get secret nextcloud-tls-secret -n nextcloud-prod -o jsonpath='{.data.tls\.crt}' | \
+  base64 -d | openssl x509 -noout -text
+
+# Force certificate renewal (delete and recreate)
+kubectl delete certificate nextcloud-tls -n nextcloud-prod
+kubectl apply -f "Kubernetes HA/manifests/nextcloud/08-tls-certificate.yaml"
+```
+
+**Nextcloud HTTPS Redirect Issues**:
+```bash
+# Configure Nextcloud to use HTTPS protocol
+kubectl exec -n nextcloud-prod deployment/nextcloud -- \
+  su -s /bin/bash www-data -c "php occ config:system:set overwriteprotocol --value='https'"
+
+# Set correct host with port
+kubectl exec -n nextcloud-prod deployment/nextcloud -- \
+  su -s /bin/bash www-data -c "php occ config:system:set overwritehost --value='nextcloud.home16.local:31896'"
+
+# Configure trusted domains
+kubectl exec -n nextcloud-prod deployment/nextcloud -- \
+  su -s /bin/bash www-data -c "php occ config:system:set trusted_domains 0 --value=localhost"
+
+kubectl exec -n nextcloud-prod deployment/nextcloud -- \
+  su -s /bin/bash www-data -c "php occ config:system:set trusted_domains 1 --value=nextcloud.home16.local"
+```
+
+**Ingress 404 Errors**:
+```bash
+# Check ingress configuration
+kubectl get ingress -A
+kubectl describe ingress nextcloud -n nextcloud-prod
+
+# Check ingress controller logs
+kubectl logs -n ingress-nginx deployment/ingress-nginx-controller --tail=50
+
+# Verify service endpoints exist
+kubectl get endpoints -n nextcloud-prod
+
+# Delete old conflicting ingress resources
+kubectl get ingress -A
+kubectl delete namespace <old-namespace>
+```
+
+### On-Premise HA Cluster Issues
 
 **SSH Connection Failures**:
 ```bash
@@ -355,4 +559,48 @@ When working with this repository, note that kubectl history and examples are av
 - `history.txt`: Contains kubectl command history with common operations
 - `WSL Tab-Completion.txt`: Tab completion setup instructions
 
-The `files/` directory contains all documentation and automation scripts. The main working directory for Ansible operations should be `ansible/` (created by `bootstrap.sh`).
+### Current Docker Desktop Setup Files
+
+The `Kubernetes HA/` directory contains the current production-ready setup:
+- `manifests/ansible/`: Ansible container deployment manifests
+- `manifests/nextcloud/`: Nextcloud HA with TLS certificate
+- `scripts/ansible-k8s.sh`: Helper script for Ansible container operations
+- `k8s_extensions_playbook.yml`: Ansible playbook for extensions (Cert-Manager, Monitoring, Loki)
+- `k8s_networking_playbook.yml`: Ansible playbook for networking (Nginx Ingress)
+- `grafana-certificate-dashboard.json`: Grafana dashboard for certificate monitoring
+- Documentation files: `FINAL_SUMMARY.md`, `ALL_EXTENSIONS_DEPLOYED.md`, etc.
+
+### Legacy On-Premise Setup Files
+
+The `files/` directory contains all documentation and automation scripts for traditional on-premise HA clusters. The main working directory for Ansible operations should be `ansible/` (created by `bootstrap.sh`).
+
+## Current Production Setup Summary
+
+**Environment**: Docker Desktop Kubernetes (macOS)
+**Total Pods Running**: 18+
+**Total Namespaces**: 6 (ansible, cert-manager, monitoring, loki, ingress-nginx, nextcloud-prod)
+**Deployment Method**: Ansible running as container in Kubernetes
+**Automation Level**: 100% (Infrastructure as Code)
+
+**Key Features**:
+- ✅ Ansible container with kubectl, Helm, and Python kubernetes modules
+- ✅ Automatic TLS certificate management with cert-manager
+- ✅ TLS auto-renewal 30 days before expiry
+- ✅ Full monitoring stack (Prometheus + Grafana)
+- ✅ Centralized logging (Loki + Promtail)
+- ✅ Nginx Ingress Controller with HTTPS
+- ✅ Nextcloud High Availability (3 replicas)
+- ✅ Production-ready configuration
+
+**Access Points**:
+- Nextcloud HTTPS: `https://nextcloud.home16.local:31896`
+- Nextcloud HTTP: `http://localhost`
+- Grafana: `http://localhost:3000` (admin / ChangeMe123!)
+
+**Documentation**:
+All deployment steps, troubleshooting guides, and configuration details are documented in:
+- `Kubernetes HA/FINAL_SUMMARY.md` - Complete overview
+- `Kubernetes HA/ALL_EXTENSIONS_DEPLOYED.md` - Extensions guide
+- `Kubernetes HA/NEXTCLOUD_TLS_AUTO_RENEWAL.md` - TLS certificate details
+- `Kubernetes HA/GRAFANA_SETUP_GUIDE.md` - Monitoring setup
+- `Kubernetes HA/ANSIBLE_QUICKSTART.md` - Ansible container guide

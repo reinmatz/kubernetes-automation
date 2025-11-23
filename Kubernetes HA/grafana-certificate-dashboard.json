@@ -1,0 +1,180 @@
+{
+  "dashboard": {
+    "title": "Certificate Manager - TLS Certificates",
+    "tags": ["cert-manager", "certificates", "tls"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Certificate Expiry Time",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "(certmanager_certificate_expiration_timestamp_seconds{namespace=\"nextcloud-prod\"} - time()) / 86400",
+            "legendFormat": "{{name}} - Days until expiry",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"label": "Days", "show": true},
+          {"show": false}
+        ],
+        "xaxis": {"show": true},
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "pointradius": 5,
+        "tooltip": {"shared": true, "sort": 0, "value_type": "individual"},
+        "legend": {"show": true, "alignAsTable": true, "avg": false, "current": true, "max": true, "min": true, "total": false, "values": true}
+      },
+      {
+        "id": 2,
+        "title": "Certificate Ready Status",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "certmanager_certificate_ready_status{namespace=\"nextcloud-prod\"}",
+            "legendFormat": "{{name}}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "none",
+          "colorMode": "background",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"],
+            "fields": ""
+          },
+          "text": {},
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "value": "0", "text": "Not Ready"},
+              {"type": "value", "value": "1", "text": "Ready"}
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "red"},
+                {"value": 1, "color": "green"}
+              ]
+            },
+            "color": {"mode": "thresholds"}
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Certificates Expiring Soon (< 30 days)",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "(certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 30",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true},
+              "indexByName": {},
+              "renameByName": {
+                "name": "Certificate",
+                "namespace": "Namespace",
+                "Value": "Days Until Expiry"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Certificate Renewal Time",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "certmanager_certificate_renewal_timestamp_seconds{namespace=\"nextcloud-prod\"}",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true},
+              "renameByName": {
+                "name": "Certificate",
+                "namespace": "Namespace",
+                "Value": "Renewal Timestamp"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "All Certificates Overview",
+        "type": "table",
+        "gridPos": {"h": 10, "w": 24, "x": 0, "y": 24},
+        "targets": [
+          {
+            "expr": "certmanager_certificate_expiration_timestamp_seconds",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true},
+              "renameByName": {
+                "name": "Certificate",
+                "namespace": "Namespace",
+                "Value": "Expiry Timestamp"
+              }
+            }
+          },
+          {
+            "id": "calculateField",
+            "options": {
+              "alias": "Days Until Expiry",
+              "mode": "reduceRow",
+              "reduce": {
+                "reducer": "last"
+              },
+              "replaceFields": false,
+              "binary": {
+                "left": "Value",
+                "operator": "-",
+                "reducer": "sum",
+                "right": "now"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "refresh": "30s",
+    "schemaVersion": 27,
+    "style": "dark",
+    "time": {"from": "now-6h", "to": "now"},
+    "timepicker": {},
+    "version": 1
+  }
+}

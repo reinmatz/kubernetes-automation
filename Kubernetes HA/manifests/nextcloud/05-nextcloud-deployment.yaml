@@ -52,10 +52,10 @@ spec:
               topologyKey: kubernetes.io/hostname
 
       # Security Context
+      # Hinweis: Nextcloud benötigt Root-Rechte beim ersten Start
+      # Der Container wechselt intern zu User 33 (www-data)
       securityContext:
         fsGroup: 33  # www-data User-ID
-        runAsUser: 33
-        runAsNonRoot: true
 
       containers:
       - name: nextcloud
@@ -92,13 +92,11 @@ spec:
               key: MYSQL_PASSWORD
 
         # Nextcloud-Konfiguration
-        - name: NEXTCLOUD_ADMIN_USER
-          value: "admin"
-        - name: NEXTCLOUD_ADMIN_PASSWORD
-          value: "changeme123"  # ⚠️ ÄNDERN oder aus Secret laden!
+        # Hinweis: Admin-User wird beim ersten Zugriff über Web-Interface erstellt
+        # Aus Sicherheitsgründen KEIN Passwort im Deployment
 
         - name: NEXTCLOUD_TRUSTED_DOMAINS
-          value: "localhost nextcloud.local nextcloud.yourdomain.com"  # ← ANPASSEN!
+          value: "localhost nextcloud.home16.local"
 
         - name: APACHE_DISABLE_REWRITE_IP
           value: "1"

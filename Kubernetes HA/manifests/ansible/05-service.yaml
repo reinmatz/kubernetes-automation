@@ -1,0 +1,18 @@
+---
+# Service für Ansible (optional - falls externe Zugriffe nötig)
+apiVersion: v1
+kind: Service
+metadata:
+  name: ansible
+  namespace: ansible
+  labels:
+    app: ansible
+spec:
+  selector:
+    app: ansible
+  ports:
+  - name: ssh
+    port: 22
+    targetPort: 22
+    protocol: TCP
+  type: ClusterIP
