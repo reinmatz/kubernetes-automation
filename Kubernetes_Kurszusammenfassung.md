@@ -1,6 +1,7 @@
 # Kubernetes Basis Kurs - Umfassende Zusammenfassung
 
 ## Inhaltsverzeichnis
+0. [Container-Grundlagen](#0-container-grundlagen)
 1. [Einführung in Kubernetes](#1-einführung-in-kubernetes)
 2. [Setup & Grundkonfiguration](#2-setup--grundkonfiguration)
 3. [Pods - Die kleinste Einheit](#3-pods---die-kleinste-einheit)
@@ -17,7 +18,137 @@
 14. [Praxisbeispiel: Nextcloud mit MariaDB](#14-praxisbeispiel-nextcloud-mit-mariadb)
 15. [Backup & Restore](#15-backup--restore)
 16. [kubectl Befehle - Cheat Sheet](#16-kubectl-befehle---cheat-sheet)
-17. [Best Practices](#17-best-practices)
+17. [Kubernetes Ressourcen - Vollständige Übersicht](#17-kubernetes-ressourcen---vollständige-übersicht)
+18. [Best Practices](#18-best-practices)
+
+---
+
+## 0. Container-Grundlagen
+
+### Evolution der Anwendungsbereitstellung
+
+Die Art und Weise, wie wir Anwendungen bereitstellen, hat sich in den letzten Jahrzehnten grundlegend verändert:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                    Evolution: 1980 → 2005 → 2015                       │
+└────────────────────────────────────────────────────────────────────────┘
+
+1980er - Bare Metal                2005+ - Virtualisierung              2015+ - Container
+┌─────────────────┐               ┌─────────────────┐                ┌─────────────────┐
+│     APP1        │               │ ┌──────┐┌──────┐│                │ ┌────┐  ┌────┐  │
+│                 │               │ │ APP1 ││ APP2 ││                │ │APP1│  │APP2│  │
+│  ┌──────────┐   │               │ │  OS  ││  OS  ││                │ │Libs│  │Libs│  │
+│  │Libraries │   │               │ │  HW  ││  HW  ││                │ │chro│  │    │  │
+│  └──────────┘   │               │ └──────┘└──────┘│                │ │ot  │  │    │  │
+│       OS        │     ═>        │  Hypervisor     │     ═>         │  Container Eng  │
+│    Kernel       │               │    + VMM        │                │    OS Kernel    │
+│       HW        │               │   OS Kernel     │                │       HW        │
+└─────────────────┘               │       HW        │                └─────────────────┘
+                                  └─────────────────┘
+     Syscalls                      Syscalls                           Syscalls
+```
+
+### Containerisierung: Wie funktioniert es?
+
+Container nutzen Linux **Kernel-Features** für Isolation:
+
+**1. Namespaces** (Isolation)
+- Jeder Container hat seine eigene isolierte Sicht auf das System
+- **PID Namespace**: Eigene Prozess-IDs (Prozess 1 im Container)
+- **Network Namespace**: Eigene Netzwerk-Interfaces und IP-Adressen
+- **Mount Namespace**: Eigenes Dateisystem
+- **UTS Namespace**: Eigener Hostname
+- **IPC Namespace**: Isolierte Inter-Process Communication
+
+**2. CGroups (Resource Management)**
+- Begrenzt Ressourcen pro Container
+- CPU, Memory, Disk I/O, Network
+- Verhindert, dass ein Container alle Ressourcen verbraucht
+
+**3. Secomp (System Call Filtering)**
+- Kontrolliert, welche Syscalls Container machen dürfen
+- Erhöht Sicherheit (z.B. verhindert Container-Breakout)
+
+**4. SELinux / AppArmor (Mandatory Access Control)**
+- Zusätzliche Sicherheitsebene
+- Default bei Red Hat: SELinux
+
+### Container vs. Virtuelle Maschinen
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  Container                      Virtuelle Maschinen           │
+├───────────────────────────────────────────────────────────────┤
+│  ✅ Schneller Start (Sekunden)   ❌ Langsamer Start (Minuten)  │
+│  ✅ Geringer Overhead             ❌ Hoher Overhead (Hypervisor)│
+│  ✅ Teilen sich Kernel            ✅ Komplette Isolation        │
+│  ❌ Weniger Isolation             ✅ Starke Isolation           │
+│  ✅ Ideal für Microservices       ✅ Ideal für Legacy-Apps      │
+└───────────────────────────────────────────────────────────────┘
+```
+
+### Container Registry
+
+Container-Images werden in **Registries** gespeichert:
+
+```
+┌─────────────────────────────────────────────┐
+│          Container Registry                 │
+│                                             │
+│  Öffentlich:                                │
+│  • Docker Hub (hub.docker.com)              │
+│  • Quay.io (Red Hat)                        │
+│  • GitHub Container Registry                │
+│                                             │
+│  Privat:                                    │
+│  • registry.redhat.io (Authentifizierung)   │
+│  • Nexus / Harbor / Artifactory             │
+│  • AWS ECR / Azure ACR / GCP GCR            │
+└─────────────────────────────────────────────┘
+```
+
+**Pull-Befehl:**
+```bash
+# Von öffentlicher Registry
+docker pull nginx:latest
+podman pull quay.io/jfreygner/myhttpd:0.20
+
+# Von privater Registry (mit Authentifizierung)
+docker login registry.redhat.io
+docker pull registry.redhat.io/rhel8/nginx:latest
+```
+
+### Kernel-Abhängigkeit und Portabilität
+
+**Wichtig:** Container sind **abhängig von der Kernel-Architektur**:
+
+```
+┌──────────────────────────────────────────────────┐
+│  Dependencies: Kernel & Architecture             │
+├──────────────────────────────────────────────────┤
+│                                                  │
+│  ✅ Linux Container on Linux Host (same arch)    │
+│  ✅ x64 Container on x64 Host                    │
+│  ✅ ARM64 Container on ARM64 Host                │
+│                                                  │
+│  ❌ Linux Container on Windows Host              │
+│     → Braucht WSL2 oder VM                      │
+│  ❌ x64 Container on ARM64 Host                  │
+│     → Emulation (langsam)                       │
+└──────────────────────────────────────────────────┘
+```
+
+**Unterstützte Betriebssysteme (für Container Runtime):**
+- **Linux**: Debian, Red Hat, SUSE, Ubuntu (native)
+- **Windows**: Windows Server 2016+ (mit WSL2 für Linux-Container)
+- **macOS**: Docker Desktop (nutzt VM im Hintergrund)
+
+**Unterstützte Architekturen:**
+- x64 (x86_64, amd64)
+- ARM64 (aarch64) - z.B. Raspberry Pi, Apple Silicon
+- ARM (32-bit)
+- s390x (IBM Mainframe)
 
 ---
 
@@ -26,6 +157,23 @@
 ### Was ist Kubernetes?
 
 Kubernetes (auch "K8s" genannt) ist eine Open-Source-Platform zur Automatisierung der Bereitstellung, Skalierung und Verwaltung von containerisierten Anwendungen. Es wurde ursprünglich von Google entwickelt und ist heute das führende Container-Orchestrierungssystem.
+
+### Warum Orchestrierung?
+
+**Problem ohne Orchestrierung:**
+- Container manuell auf Servern verteilen
+- Keine automatische Skalierung
+- Kein Self-Healing bei Ausfällen
+- Komplexes Netzwerk-Management
+- Manuelle Updates und Rollbacks
+
+**Lösung: Kubernetes-Orchestrierung**
+- ✅ Automatische Container-Platzierung (Scheduler)
+- ✅ Self-Healing (Neustart bei Abstürzen)
+- ✅ Horizontal Scaling (mehr/weniger Replicas)
+- ✅ Service Discovery und Load Balancing
+- ✅ Rolling Updates und automatische Rollbacks
+- ✅ Secret- und Configuration-Management
 
 ### Grundlegende Architektur
 
@@ -79,6 +227,147 @@ Kubernetes (auch "K8s" genannt) ist eine Open-Source-Platform zur Automatisierun
 **Namespace**: Logische Trennung innerhalb eines Clusters. Nützlich für verschiedene Teams, Projekte oder Umgebungen (dev/test/prod).
 
 **Context**: Kombination aus Cluster, User und Namespace. Definiert, mit welchem Cluster und Namespace kubectl arbeitet.
+
+### Erweiterte Cluster-Architektur
+
+**High-Availability (HA) Setup:**
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Workstation / Client                         │
+│  ┌────────┐                                                          │
+│  │  APP1  │    CLI (kubectl), GUI, SDK                              │
+│  └────────┘                                                          │
+└─────────────────────────┬────────────────────────────────────────────┘
+                          │
+            ┌─────────────┼─────────────┬─────────────┐
+            ↓             ↓             ↓             ↓
+┌──────────────────────────────────────────────────────────────────────┐
+│               Master Nodes / Control Plane (HA)                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Node 1     │  │   Node 2     │  │   Node 3     │              │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌──────────┐ │              │
+│  │ │   ETCD   │←┼──┼→│   ETCD   │←┼──┼→│   ETCD   │ │ (sync)       │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │              │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌──────────┐ │              │
+│  │ │API-Server│ │  │ │API-Server│ │  │ │API-Server│ │              │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │              │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌──────────┐ │              │
+│  │ │Controller│ │  │ │Controller│ │  │ │Controller│ │              │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │              │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌──────────┐ │              │
+│  │ │Scheduler │ │  │ │Scheduler │ │  │ │Scheduler │ │              │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │              │
+│  │  kubelet     │  │  kubelet     │  │  kubelet     │              │
+│  │Container Eng.│  │Container Eng.│  │Container Eng.│              │
+│  │      OS      │  │      OS      │  │      OS      │              │
+│  │      HW      │  │      HW      │  │      HW      │              │
+│  └──────────────┘  └──────────────┘  └──────────────┘              │
+└──────────────────────────────────────────────────────────────────────┘
+                          │
+            ┌─────────────┼─────────────┬─────────────┐
+            ↓             ↓             ↓             ↓
+┌──────────────────────────────────────────────────────────────────────┐
+│         Worker Nodes / Compute Plane (Development/Production)        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Node 1     │  │   Node 2     │  │   Node 3     │    ...       │
+│  │  ┌────────┐  │  │  ┌────────┐  │  │  ┌────────┐  │              │
+│  │  │  APP1  │  │  │  │  APP1  │  │  │  │  APP1  │  │              │
+│  │  └────────┘  │  │  └────────┘  │  │  └────────┘  │              │
+│  │  kubelet     │  │  kubelet     │  │  kubelet     │              │
+│  │Container Eng.│  │Container Eng.│  │Container Eng.│              │
+│  │      OS      │  │      OS      │  │      OS      │              │
+│  │      HW      │  │      HW      │  │      HW      │              │
+│  └──────────────┘  └──────────────┘  └──────────────┘              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**ETCD Quorum-Berechnung:**
+```
+Quorum = (expected_votes / 2) + 1 (round down)
+
+Beispiel mit 3 Master Nodes:
+Quorum = (3 / 2) + 1 = 2
+
+→ Mindestens 2 von 3 Nodes müssen funktionieren
+→ 1 Node kann ausfallen, Cluster bleibt funktional
+```
+
+**Wichtig für HA:**
+- **Immer ungerade Anzahl** Master Nodes (3, 5, 7)
+- Niemals 2 Master Nodes! (kein Quorum bei 1 Ausfall)
+- 3 Nodes = optimales HA-Setup (1 Ausfall tolerierbar)
+- 5 Nodes = 2 Ausfälle tolerierbar (nur für kritische Cluster)
+
+### Kubernetes-Distributionen und Extensions
+
+**Kubernetes Vanilla vs. Managed Distributions:**
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                  Kubernetes-Distributionen                    │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  Vanilla Kubernetes (Upstream)                               │
+│  • kubernetes.io                                             │
+│  • Basis für alle anderen Distributionen                     │
+│  • Installation: kubeadm, kubespray, kube-up                 │
+│                                                               │
+│  Enterprise-Distributionen (On-Premise/Hybrid):              │
+│  • OpenShift (Red Hat) - Kubernetes + Developer-Tools        │
+│  • Tanzu (VMware) - VMware-Integration                       │
+│  • Rancher (SUSE) - Multi-Cluster Management                 │
+│                                                               │
+│  Managed Cloud-Services:                                     │
+│  • AKS (Azure Kubernetes Service)                            │
+│  • EKS (Amazon Elastic Kubernetes Service)                   │
+│  • GKE (Google Kubernetes Engine)                            │
+│  • OKE (Oracle Container Engine for Kubernetes)              │
+│                                                               │
+│  Lightweight/Edge:                                           │
+│  • K3s (Rancher) - Minimal Kubernetes für IoT/Edge          │
+│  • MicroK8s (Canonical) - Single-Node Kubernetes             │
+│  • Kind (Kubernetes in Docker) - Lokale Entwicklung          │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Kubernetes Extensions (Cluster-Erweiterungen):**
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    Kubernetes Extensions                       │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  Networking:                                                   │
+│  • SDN (Software Defined Network) - Flannel, Calico, Cilium   │
+│  • Ingress Controller - Nginx, Traefik, HAProxy, Istio       │
+│  • Service Mesh - Istio, Linkerd, Consul                     │
+│                                                                │
+│  Storage:                                                      │
+│  • CSI (Container Storage Interface) Drivers                  │
+│  • Rook (Cloud-Native Storage Orchestrator)                   │
+│  • Longhorn (Rancher) - Distributed Block Storage            │
+│                                                                │
+│  Security & Access:                                           │
+│  • Authentication - OIDC, LDAP, Active Directory             │
+│  • RBAC (Role-Based Access Control) - Built-in              │
+│  • Network Policies - Calico, Cilium                         │
+│  • Pod Security Policies / Pod Security Standards            │
+│                                                                │
+│  Observability:                                               │
+│  • Metrics - Prometheus, Datadog, New Relic                  │
+│  • Logging - Fluentd, Loki, ELK Stack                        │
+│  • Tracing - Jaeger, Zipkin                                  │
+│  • Dashboards - Grafana, Kubernetes Dashboard                │
+│                                                                │
+│  CI/CD & GitOps:                                              │
+│  • ArgoCD, Flux CD - GitOps Deployment                       │
+│  • Tekton - Cloud-Native CI/CD Pipelines                     │
+│  • Jenkins X - Kubernetes-Native Jenkins                     │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -1835,6 +2124,175 @@ secret/nextcloud  Opaque  5
 ingress.networking.k8s.io/nextcloud  nginx  nextcloud.myfirst.local
 ```
 
+### Optionale Komponenten (Production-Ready Setup)
+
+**1. ResourceQuota hinzufügen**
+
+Begrenzt Ressourcen im Namespace:
+
+```bash
+# ResourceQuota erstellen
+kubectl create quota nextcloud-quota \
+  --hard=limits.cpu=4,limits.memory=8Gi,requests.cpu=2,requests.memory=4Gi,pods=10,persistentvolumeclaims=5
+
+# Prüfen
+kubectl describe resourcequota nextcloud-quota
+```
+
+**2. LimitRange hinzufügen**
+
+Setzt Standard-Werte für Container:
+
+```yaml
+# limitrange.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: nextcloud-limits
+spec:
+  limits:
+  - max:
+      cpu: "2"
+      memory: "2Gi"
+    min:
+      cpu: "100m"
+      memory: "128Mi"
+    default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "200m"
+      memory: "256Mi"
+    type: Container
+```
+
+```bash
+kubectl create -f limitrange.yaml
+```
+
+**3. Horizontal Pod Autoscaler (HPA) für Nextcloud**
+
+Automatisches Scaling basierend auf Last:
+
+```bash
+# Erst: CPU Requests für Nextcloud setzen (wichtig für HPA!)
+oc set resources deployment/nextcloud \
+  --limits=cpu=1,memory=1Gi \
+  --requests=cpu=200m,memory=512Mi
+
+# HPA erstellen
+kubectl autoscale deployment nextcloud \
+  --cpu-percent=70 \
+  --min=2 \
+  --max=5
+
+# Prüfen
+kubectl get hpa
+```
+
+**4. NetworkPolicy für Sicherheit**
+
+Erlaubt nur notwendigen Traffic:
+
+```yaml
+# networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mariadb-netpol
+spec:
+  podSelector:
+    matchLabels:
+      app: mariadb
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nextcloud
+    ports:
+    - protocol: TCP
+      port: 3306
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nextcloud-netpol
+spec:
+  podSelector:
+    matchLabels:
+      app: nextcloud
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 80
+```
+
+```bash
+kubectl create -f networkpolicy.yaml
+```
+
+**5. Probes für Nextcloud und MariaDB**
+
+```bash
+# Readiness Probe für Nextcloud
+oc set probe deployment/nextcloud \
+  --readiness \
+  --get-url=http://:80/status.php \
+  --initial-delay-seconds=30 \
+  --period-seconds=10
+
+# Liveness Probe für Nextcloud
+oc set probe deployment/nextcloud \
+  --liveness \
+  --get-url=http://:80/status.php \
+  --initial-delay-seconds=60 \
+  --period-seconds=30
+
+# TCP Probe für MariaDB
+oc set probe deployment/mariadb \
+  --readiness \
+  --open-tcp=3306 \
+  --initial-delay-seconds=10
+
+oc set probe deployment/mariadb \
+  --liveness \
+  --open-tcp=3306 \
+  --initial-delay-seconds=30
+```
+
+### Vollständige Deployment-Checkliste
+
+```
+┌──────────────────────────────────────────────────────────┐
+│    Nextcloud Production Deployment - Checkliste          │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  ✅ 1x Namespace (rma-nextcloud)                         │
+│  ✅ 1x Secret (DB-Credentials)                           │
+│  ✅ 1x Deployment (MariaDB mit StatefulSet-Option)       │
+│  ✅ 1x Deployment (Nextcloud)                            │
+│  ✅ 2x PVC (mariadb, nextcloud)                          │
+│  ✅ 2x Service (mariadb: ClusterIP, nextcloud: ClusterIP)│
+│  ✅ 1x Ingress (nextcloud)                               │
+│                                                          │
+│  Optional (Production):                                  │
+│  ⬜ ResourceQuota (Namespace-Limits)                     │
+│  ⬜ LimitRange (Default-Werte)                           │
+│  ⬜ HPA (Auto-Scaling für Nextcloud)                     │
+│  ⬜ NetworkPolicy (Firewall-Regeln)                      │
+│  ⬜ Health Probes (Liveness/Readiness)                   │
+│  ⬜ Backup-CronJob (regelmäßige Backups)                 │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## 15. Backup & Restore
@@ -2287,13 +2745,49 @@ kubectl -v=8 get pods                         # Verbose-Level 0-10
 kubectl get <resource> <name> -o yaml > backup.yaml
 kubectl get all -o yaml > all-resources.yaml
 
-# Importieren
+# Importieren (Imperativ - nur für neue Ressourcen)
 kubectl create -f backup.yaml
+
+# Apply (Deklarativ - erstellt ODER aktualisiert)
 kubectl apply -f backup.yaml
 
 # Mehrere Dateien
 kubectl create -f ./directory/                # Alle YAML-Dateien
 kubectl apply -f ./directory/ -R              # Rekursiv
+
+# Unterschied zwischen create und apply anzeigen
+kubectl diff -f deployment.yaml               # Zeigt Änderungen vor Apply
+```
+
+### Deklaratives Management (apply, replace, diff)
+
+```bash
+# Apply: Empfohlene Methode (erstellt oder aktualisiert)
+kubectl apply -f deployment.yaml
+kubectl apply -f ./manifests/ -R
+
+# Unterschiede vor Apply anzeigen
+kubectl diff -f deployment.yaml
+
+# Replace: Ersetzt komplette Ressource (gefährlich!)
+kubectl replace -f deployment.yaml
+kubectl replace -f deployment.yaml --force   # Löscht und erstellt neu
+
+# Kustomize (Built-in ab kubectl 1.14)
+kubectl apply -k ./kustomization/
+```
+
+**Unterschied create vs. apply:**
+```
+┌─────────────────────────────────────────────────────────┐
+│  create                    apply                        │
+├─────────────────────────────────────────────────────────┤
+│  • Imperativ               • Deklarativ                 │
+│  • Nur neue Ressourcen     • Erstellt ODER aktualisiert │
+│  • Fehler bei Existenz     • Idempotent                 │
+│  • Keine Historie          • 3-Wege-Merge               │
+│  • Schnell für Testing     • Best Practice für Prod     │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### Hilfe & Dokumentation
@@ -2307,7 +2801,1053 @@ kubectl explain pod.spec.containers           # Feld-Dokumentation
 
 ---
 
-## 17. Best Practices
+## 17. Kubernetes Ressourcen - Vollständige Übersicht
+
+### Ressourcen-Kategorien
+
+Kubernetes-Ressourcen lassen sich in zwei Hauptkategorien einteilen:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│           Cluster-Wide vs. Namespaced Resources              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  🔴 Cluster-Wide Resources (rot)                             │
+│  • Verfügbar im gesamten Cluster                            │
+│  • Keine Namespace-Zuordnung                                │
+│  • Beispiele: Node, Namespace, ClusterRole, StorageClass    │
+│                                                              │
+│  🔵 Namespaced Resources (blau)                              │
+│  • Gebunden an einen Namespace                              │
+│  • Isolation zwischen Namespaces                            │
+│  • Beispiele: Pod, Service, Deployment, ConfigMap           │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Ressourcen-Übersicht mit Beziehungen
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                    Kubernetes Resources Map                            │
+└────────────────────────────────────────────────────────────────────────┘
+
+                         🔴 ingressclass
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │                       │                       │
+    🔵 pod (a) ←→ 🔵 endpoint (a) → 🔵 service → 🔵 ingress
+        ↑                   ↑ (if ready)
+        │                   │
+    🔵 replicaset (a) ←┬─ 🔵 job ←─ 🔵 cronjob
+        ↑              │
+        │              │
+    🔵 deployment      🔵 statefulset  🔵 daemonset
+        ↑              ↑                   ↑
+        │              │                   │
+    ┌───┴───┬──────────┴──────┬────────────┴──────────┐
+    │       │                 │                       │
+🔵 configmap  🔵 secrets → 🔵 serviceaccount → 🔵 rolebinding ──┐
+    │          │                   ↓                           │
+    │          │           🔵 horizontalpodautoscaler          │
+    │          │                   ↓                           │
+    │          └──────→ 🔵 persistentvolumeclaim               │
+    │                          ↓                               │
+    │                   🔴 persistentvolume                    │
+    │                          ↑                               │
+    │                   🔴 storageclass                        │
+    │                                                          │
+    └──────────────────────────────────────────────────────────┤
+                                                               │
+        🔵 resourcequotas    🔵 limitrange                     │
+                                                               │
+                                                         🔵 role
+                                                               ↑
+                    ┌──────────────────────────────────────────┘
+                    │
+            🔴 clusterrole ←─ 🔴 clusterrolebinding
+                    ↑
+                🔴 user
+```
+
+### Workload-Ressourcen
+
+**Pod (Namespace)**
+- Kleinste deploybare Einheit
+- Ein oder mehrere Container
+- Ephemeral (nicht dauerhaft)
+
+**ReplicaSet (Namespace)**
+- Stellt sicher, dass X Replicas eines Pods laufen
+- Wird normalerweise von Deployment verwaltet
+- Selten direkt verwendet
+
+**Deployment (Namespace)**
+- Verwaltet ReplicaSets
+- Deklaratives Update-Management
+- Rolling Updates und Rollbacks
+- **Best Practice:** Standard für stateless Apps
+
+**StatefulSet (Namespace)**
+- Wie Deployment, aber für stateful Apps
+- Feste Pod-Namen (pod-0, pod-1, ...)
+- Eigener PersistentVolume pro Pod
+- Geordnetes Starten/Stoppen
+- **Best Practice:** Für Datenbanken, Message Queues
+
+**DaemonSet (Namespace)**
+- Läuft auf JEDEM Node (oder Subset)
+- Automatisch auf neuen Nodes deployed
+- **Beispiele:** Logging-Agents, Monitoring, CNI-Plugins
+
+**Job (Namespace)**
+- Führt eine Aufgabe einmalig aus
+- Pod läuft bis Completion
+- Kein automatischer Neustart nach Erfolg
+
+**CronJob (Namespace)**
+- Zeitgesteuertes Job-Scheduling
+- Wie Linux Cron
+- **Beispiele:** Backups, Reports, Cleanup-Tasks
+
+### Networking-Ressourcen
+
+**Service (Namespace)**
+- Stabile IP und DNS für Pod-Gruppe
+- Load Balancing über Endpoints
+- Typen: ClusterIP, NodePort, LoadBalancer
+
+**Endpoints (Namespace)**
+- Liste der Pod-IPs hinter einem Service
+- Automatisch von Kubernetes verwaltet
+
+**Ingress (Namespace)**
+- HTTP/HTTPS Routing zu Services
+- Hostname- und pfad-basiertes Routing
+- SSL/TLS-Terminierung
+
+**IngressClass (Cluster-Wide)**
+- Definiert Ingress-Controller-Typ
+- Beispiele: nginx, traefik, haproxy
+
+**NetworkPolicy (Namespace)**
+- Firewall-Regeln für Pods
+- Ingress/Egress Traffic-Kontrolle
+- Erfordert CNI-Plugin mit NetworkPolicy-Support
+
+### Configuration-Ressourcen
+
+**ConfigMap (Namespace)**
+- Nicht-sensible Konfigurationsdaten
+- Als Umgebungsvariablen oder Volumes
+
+**Secret (Namespace)**
+- Sensible Daten (Passwörter, Keys, Zertifikate)
+- Base64-kodiert (NICHT verschlüsselt!)
+- Typen: generic, docker-registry, tls
+
+**ServiceAccount (Namespace)**
+- Identität für Pods
+- Für API-Server-Zugriff
+- Automatisches Mounting von Secrets
+
+### Storage-Ressourcen
+
+**PersistentVolume (PV) (Cluster-Wide)**
+- Tatsächlicher Storage
+- Wird von Admin provisioniert
+- Oder: automatisch von StorageClass
+
+**PersistentVolumeClaim (PVC) (Namespace)**
+- Anforderung für Storage
+- "Ich brauche 10GB"
+- Wird an PV gebunden
+
+**StorageClass (Cluster-Wide)**
+- Storage-Typ-Definition
+- Automatische PV-Provisionierung
+- Beispiele: fast-ssd, slow-hdd, cloud-storage
+
+### Resource Management
+
+**ResourceQuota (Namespace)**
+- Limits für gesamten Namespace
+- CPU, Memory, Anzahl Pods, PVCs, etc.
+- **Wichtig:** Wenn Quota aktiv → Requests/Limits Pflicht!
+
+**LimitRange (Namespace)**
+- Standard- und Max/Min-Werte für Pods
+- Automatische Defaults wenn nicht angegeben
+- **Best Practice:** In jedem Namespace!
+
+**HorizontalPodAutoscaler (HPA) (Namespace)**
+- Automatisches Scaling basierend auf Metriken
+- CPU, Memory, Custom Metrics
+- Verändert Replicas von Deployment/StatefulSet
+
+### Security & Access Control (RBAC)
+
+**Role (Namespace)**
+- Permissions innerhalb eines Namespace
+- Was darf gemacht werden (Verben: get, list, create, delete, ...)
+- Auf welchen Ressourcen (Pods, Services, ...)
+
+**RoleBinding (Namespace)**
+- Verknüpft Role mit User/ServiceAccount
+- "User X hat Role Y im Namespace Z"
+
+**ClusterRole (Cluster-Wide)**
+- Wie Role, aber cluster-weit
+- Oder: für cluster-wide Ressourcen (Nodes, PVs)
+
+**ClusterRoleBinding (Cluster-Wide)**
+- Verknüpft ClusterRole mit User/ServiceAccount
+- Gilt für ganzen Cluster
+
+**Beispiel RBAC-Setup:**
+```yaml
+# Role: Darf Pods lesen
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: dev
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+# RoleBinding: User "alice" bekommt Role "pod-reader"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: dev
+subjects:
+- kind: User
+  name: alice
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+### Weitere wichtige Ressourcen
+
+**Node (Cluster-Wide)**
+- Physischer oder virtueller Server
+- Worker oder Control Plane
+- Kann gedraint/cordoned werden
+
+**Namespace (Cluster-Wide)**
+- Virtuelle Cluster-Trennung
+- Für Isolation und Organisation
+
+**PriorityClass (Cluster-Wide)**
+- Pod-Prioritäten definieren
+- Wichtige Pods werden zuerst gescheduled
+- Bei Ressourcenmangel: Low-Priority Pods werden evicted
+
+### Ressourcen prüfen
+
+```bash
+# Alle Ressourcen-Typen
+kubectl api-resources
+
+# Nur namespaced
+kubectl api-resources --namespaced=true
+
+# Nur cluster-wide
+kubectl api-resources --namespaced=false
+
+# Ressource erklären
+kubectl explain deployment
+kubectl explain deployment.spec.template.spec.containers
+```
+
+---
+
+## 18. Hands-On Workshop - Kompletter Praxis-Durchlauf
+
+Dieser Abschnitt dokumentiert einen **vollständigen praktischen Kubernetes-Workshop** mit realen Befehlen aus einem Training. Die Befehle sind chronologisch geordnet und zeigen den kompletten Workflow von Setup bis Production-Deployment.
+
+### Workshop-Übersicht (957 Befehle)
+
+Der Workshop deckt folgende Themen ab:
+1. ✅ Initial Setup (kubectl, Tab-Completion, Cluster-Verbindung)
+2. ✅ Namespaces und Kontexte
+3. ✅ Pods und Deployments
+4. ✅ Services und Networking
+5. ✅ Ingress Controller Setup
+6. ✅ ConfigMaps und Secrets
+7. ✅ Persistent Storage (PVC/PV)
+8. ✅ StatefulSets für Datenbanken
+9. ✅ Resource Management (Metrics, Limits, Quotas)
+10. ✅ RBAC und Security
+11. ✅ Health Probes
+12. ✅ Horizontal Pod Autoscaling
+13. ✅ Jobs und CronJobs
+14. ✅ Nextcloud Production Deployment
+15. ✅ Kubernetes Dashboard
+16. ✅ Backup/Restore und Kustomize
+17. ✅ Helm Package Manager
+
+### Phase 1: Initial Setup (Befehle 1-25)
+
+**kubectl Installation und Tab-Completion:**
+```bash
+# 6: Tab-Completion installieren (massiv produktivitätssteigernd!)
+kubectl completion bash | sudo tee /etc/bash_completion.d/kubectl
+
+# 7: Aktivieren
+source /etc/bash_completion.d/kubectl
+
+# 9: Nodes prüfen (Cluster-Verbindung)
+kubectl get nodes
+
+# 11: Cluster-Konfiguration anzeigen
+cat .kube/config
+
+# 12: Contexts anzeigen
+kubectl config get-contexts
+
+# 16: Alle verfügbaren API-Ressourcen
+kubectl api-resources
+
+# 18: Nur Namespace-spezifische Ressourcen
+kubectl api-resources --namespaced=true
+
+# 19: Anzahl der Ressourcen-Typen
+kubectl api-resources | wc -l
+# OUTPUT: ~60+ Ressourcen-Typen
+
+# 20: Ressource erklären
+kubectl explain pod
+```
+
+**Namespace erstellen und Context setzen:**
+```bash
+# 22: Namespace erstellen
+kubectl create namespace fre-myfirst
+
+# 23: Alle Namespaces anzeigen
+kubectl get namespaces
+
+# 24: Context auf neuen Namespace setzen (wichtig!)
+kubectl config set-context docker-desktop --namespace fre-myfirst
+
+# 25: Prüfen
+kubectl config get-contexts
+```
+
+### Phase 2: Pods und Deployments (Befehle 26-93)
+
+**Pod erstellen (nicht empfohlen für Produktion):**
+```bash
+# 26: Einfacher Pod
+kubectl run myhttpd --image quay.io/jfreygner/myhttpd:0.20
+
+# 27-28: Status prüfen
+kubectl get pods
+kubectl get all
+
+# 33-34: In Pod einloggen
+kubectl exec -it myhttpd -- bash
+
+# 38: Pod löschen (ist danach komplett weg!)
+kubectl delete pod myhttpd
+```
+
+**Deployment erstellen (Best Practice):**
+```bash
+# 40: Deployment erstellen (mit Self-Healing)
+kubectl create deployment myhttpd --image quay.io/jfreygner/myhttpd:0.20
+
+# 41: Alles anzeigen (Deployment + ReplicaSet + Pod)
+kubectl get all
+
+# 42: Auf 3 Replicas skalieren
+kubectl scale deployment myhttpd --replicas 3
+
+# 44: Pods mit IPs anzeigen
+kubectl get pods -o wide
+
+# 45: Einen Pod löschen
+kubectl delete pod myhttpd-746766bc85-lq8h7
+
+# 46: Pod wird automatisch neu erstellt!
+kubectl get pods -o wide
+```
+
+**Environment-Variablen und Rollouts:**
+```bash
+# 69: Env-Var setzen (triggert Rollout)
+kubectl set env deployment myhttpd HTTPD_PORT=4711
+
+# 73: Rollout-Historie anzeigen
+kubectl rollout history deployment myhttpd
+
+# 74-76: Einzelne Revision anzeigen
+kubectl rollout history deployment myhttpd --revision 1
+kubectl rollout history deployment myhttpd --revision 2
+
+# 77: Rollback zur vorherigen Version
+kubectl rollout undo deployment myhttpd
+
+# 84: Zu spezifischer Revision zurück
+kubectl rollout undo deployment myhttpd --to-revision 2
+```
+
+### Phase 3: Services und Networking (Befehle 94-149)
+
+**Service erstellen:**
+```bash
+# 95: Service für Deployment erstellen
+kubectl expose deployment myhttpd --port 8080
+
+# 96: Service anzeigen
+kubectl get service
+# OUTPUT: ClusterIP wird vergeben (z.B. 10.110.219.138)
+
+# 97: Service testen (intern im Cluster)
+curl 10.110.219.138:8080
+
+# 99: Service-Details anzeigen
+kubectl describe service myhttpd
+
+# 109: Endpoints anzeigen (Pod-IPs)
+kubectl describe endpoints myhttpd
+```
+
+**Service-Typ ändern auf NodePort:**
+```bash
+# 111: Service editieren
+kubectl edit deployments.apps myhttpd
+# Ändern: type: NodePort
+
+# 120: Service und Endpoints prüfen
+kubectl describe service myhttpd
+kubectl describe endpoints myhttpd
+```
+
+### Phase 4: Ingress Controller (Befehle 127-149)
+
+**Ingress Controller installieren:**
+```bash
+# 127-129: Verzeichnis vorbereiten
+mkdir -p setup/ingress
+cd setup/ingress/
+cp /mnt/c/Users/Administrator/Downloads/deploy.yaml .
+
+# 130: Ingress Controller deployen
+kubectl create -f deploy.yaml
+
+# 131: Ingress Classes prüfen
+kubectl get ingressclasses.networking.k8s.io
+# OUTPUT: nginx verfügbar
+
+# 133: Alle Komponenten im Namespace
+kubectl get all -n ingress-nginx
+```
+
+**Ingress Regel erstellen:**
+```bash
+# 137: Ingress für myhttpd
+kubectl create ingress myhttpd --class nginx --rule "www.myfirst.local/*=myhttpd:8080"
+
+# 139-140: Status prüfen
+kubectl get ingress
+kubectl get all
+
+# 142: IP-Adresse herausfinden
+ip a s
+
+# 143: Lokalen DNS-Eintrag hinzufügen
+echo "172.22.84.207 www.myfirst.local" | sudo tee -a /etc/hosts
+
+# 144: Testen
+curl www.myfirst.local
+# OUTPUT: Webseite wird angezeigt!
+```
+
+### Phase 5: ConfigMaps (Befehle 238-283)
+
+**Config-Datei aus Pod extrahieren und als ConfigMap speichern:**
+```bash
+# 247: Config-Datei extrahieren
+kubectl exec myhttpd-5cc4859bb9-8zrsd -- cat /etc/httpd/conf/httpd.conf > httpd.conf
+
+# 251: In Editor öffnen und anpassen
+code httpd.conf
+
+# 253: ConfigMap erstellen
+kubectl create configmap myhttpd --from-file httpd.conf
+```
+
+**oc Tool installieren (für erweiterte Funktionen):**
+```bash
+# 256-260: OpenShift Client (oc) herunterladen
+wget https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.19.19/openshift-client-linux-4.19.19.tar.gz
+sudo tar xf ~/openshift-client-linux-4.19.19.tar.gz -C /usr/local/bin oc
+
+# 261: Version prüfen
+oc version
+
+# 262-263: Tab-Completion
+oc completion bash | sudo tee /etc/bash_completion.d/oc &> /dev/null
+source /etc/bash_completion.d/oc
+```
+
+**ConfigMap in Deployment einbinden:**
+```bash
+# 271: ConfigMap als Volume mounten
+oc set volumes deployment myhttpd \
+  --add \
+  --name myhttpd-conf \
+  -t configmap \
+  --configmap-name myhttpd \
+  --mount-path /etc/httpd/conf/httpd.conf \
+  --sub-path httpd.conf
+
+# 277: ConfigMap aktualisieren
+oc set data configmap myhttpd --from-file httpd.conf
+
+# 280: Pods neu starten für neue Config
+kubectl delete pod myhttpd-6fd746d769-rspnz
+```
+
+### Phase 6: Persistent Storage (Befehle 284-332)
+
+**PVC erstellen und mounten:**
+```bash
+# 284: StorageClasses anzeigen
+oc get sc
+
+# 289: PVC erstellen und in Deployment mounten
+oc set volumes deployment myhttpd \
+  --add \
+  --name myhttpd-data \
+  -t pvc \
+  --claim-size 5G \
+  --claim-name myhttpd \
+  --claim-mode rwm \
+  --mount-path /var/www/html
+
+# 290-291: Status prüfen
+kubectl get pods
+oc get deployments.apps
+
+# 293: In Pod einloggen und Datei erstellen
+kubectl exec -it myhttpd-d5478dd48-g4llt -- bash
+# echo "Persistent Data" > /var/www/html/index.html
+
+# 301-303: Persistenz testen (alle Pods löschen)
+kubectl scale deployment myhttpd --replicas 0
+kubectl scale deployment myhttpd --replicas 3
+
+# 304: Daten sind noch da!
+curl www.myfirst.local
+```
+
+**PersistentVolume Reclaim Policy ändern:**
+```bash
+# 309: PersistentVolumes anzeigen
+kubectl get pv
+
+# 314: PV editieren (Reclaim Policy auf Retain)
+kubectl edit pv pvc-6395405a-e0e8-4dc4-aea6-5bcc4dcde0a8
+```
+
+### Phase 7: StatefulSet für MariaDB (Befehle 333-367)
+
+**MariaDB mit StatefulSet deployen:**
+```bash
+# 333: Namespace wechseln
+kubectl config set-context docker-desktop --namespace fre-mydb
+
+# 335: PVC für MariaDB hinzufügen
+oc set volumes deployment mydb \
+  --add \
+  --name mydb-data \
+  -t pvc \
+  --claim-size 5G \
+  --claim-name mydb \
+  --claim-mode rwo \
+  --mount-path /var/lib/mysql
+
+# 359-361: Deployment als Basis für StatefulSet exportieren
+kubectl get -o yaml deployment mydb > mydb-deploy.yaml
+cp mydb-deploy.yaml mydb-statefulset.yaml
+code mydb-statefulset.yaml
+
+# 365-367: StatefulSet deployen
+kubectl delete deployments.apps mydb
+kubectl create -f mydb-statefulset.yaml
+kubectl get pods,pvc
+# OUTPUT: mydb-0, mydb-1 mit jeweils eigenem PVC
+```
+
+### Phase 8: Resource Management (Befehle 369-472)
+
+**Metrics Server installieren:**
+```bash
+# 369-375: Metrics Server deployen
+mkdir setup/metrics
+cd setup/metrics/
+cp /mnt/c/Users/Administrator/Downloads/components-insecure-tls.yaml .
+kubectl create -f components-insecure-tls.yaml
+
+# 376-377: Ressourcen-Verbrauch anzeigen
+kubectl top pods
+kubectl top node
+```
+
+**Resource Limits setzen:**
+```bash
+# 426-427: Requests und Limits setzen
+oc set resources deployment myhttpd \
+  --limits cpu=2,memory=6Gi \
+  --requests cpu=1,memory=5Gi
+
+# 429: Limits prüfen
+oc describe pod myhttpd-54db85758d-dksgn | grep -i -A6 limits
+```
+
+**ResourceQuota erstellen:**
+```bash
+# 441: Quota für Namespace
+kubectl create quota myhttpd \
+  --hard limits.cpu=5,requests.cpu=3,limits.memory=5Gi,requests.memory=1Gi,pods=10
+
+# 442: Quota-Status anzeigen
+kubectl describe resourcequotas myhttpd
+```
+
+**LimitRange für Default-Werte:**
+```bash
+# 462-464: LimitRange aus YAML erstellen
+vi myhttpd-limitrange.yaml
+oc create -f myhttpd-limitrange.yaml
+kubectl describe limitranges myhttpd
+```
+
+### Phase 9: RBAC (Befehle 476-502)
+
+**Roles und RoleBindings erkunden:**
+```bash
+# 482-485: RBAC-Komponenten im ingress-nginx Namespace
+kubectl config set-context docker-desktop --namespace ingress-nginx
+kubectl get roles
+kubectl get rolebindings.rbac.authorization.k8s.io
+kubectl describe role ingress-nginx
+
+# 492-496: ClusterRoles und ClusterRoleBindings
+kubectl get clusterrole
+kubectl describe clusterrole cluster-admin
+kubectl describe clusterrole view
+kubectl get clusterrolebindings.rbac.authorization.k8s.io
+```
+
+### Phase 10: Health Probes (Befehle 536-556)
+
+**Readiness und Liveness Probes setzen:**
+```bash
+# 537: Readiness Probe
+oc set probe deployment/myhttpd \
+  --readiness \
+  --get-url=http://:8080/index.html \
+  --initial-delay-seconds 10
+
+# 538: Pods beobachten
+oc get pods -w
+# Pods zeigen READY 0/1 → 1/1 wenn Probe erfolgreich
+
+# 549: Liveness Probe
+oc set probe deployment/myhttpd \
+  --liveness \
+  --get-url=http://:8080/index.html
+
+# 550: In Pod einloggen und index.html löschen (Test)
+kubectl exec -it myhttpd-759f988486-m7ztn -- bash
+# rm /var/www/html/index.html
+
+# 551: Pods beobachten
+kubectl get pods -w
+# Pod wird automatisch neu gestartet (RESTARTS erhöht sich)
+```
+
+### Phase 11: Horizontal Pod Autoscaler (Befehle 559-588)
+
+**HPA erstellen und testen:**
+```bash
+# 559: HPA erstellen
+kubectl autoscale deployment myhttpd --cpu-percent 80 --min 2 --max 10
+
+# 561-562: Status prüfen
+kubectl get hpa
+kubectl get pods
+
+# 564: Ressourcen-Verbrauch
+kubectl top pods --sum
+
+# 574: In Pod einloggen und CPU-Last erzeugen
+kubectl exec -it myhttpd-759f988486-m7ztn -- bash
+# md5sum /dev/zero &  # CPU-Last erzeugen
+
+# 577-578: HPA beobachten
+kubectl top pods --sum
+kubectl get hpa
+# OUTPUT: CPU steigt, HPA erstellt neue Pods
+
+# 586-587: Last stoppen
+kubectl delete pod myhttpd-759f988486-m7ztn
+# HPA skaliert nach ~5 Minuten wieder runter
+```
+
+### Phase 12: Jobs und CronJobs (Befehle 590-613)
+
+**Jobs:**
+```bash
+# 598: Job erstellen
+kubectl create job mydate --image quay.io/jfreygner/mydate:0.2
+
+# 599-600: Status prüfen
+kubectl get pods,job
+kubectl logs job/mydate
+# OUTPUT: Datum, Pod Status: Completed
+```
+
+**CronJobs:**
+```bash
+# 602: CronJob erstellen (alle 2 Minuten, Mo-Fr, 8-16 Uhr)
+kubectl create cronjob mydate \
+  --image quay.io/jfreygner/mydate:0.2 \
+  --schedule '*/2 8-16 * * 1-5'
+
+# 604-611: Status beobachten
+kubectl get cronjob,job,pod
+date
+# Nach 2 Minuten: Neuer Job wird erstellt
+
+# 612-613: Logs anzeigen
+kubectl logs job/mydate-29395344
+kubectl logs job/mydate-29395346
+```
+
+### Phase 13: Nextcloud Production Deployment (Befehle 614-688)
+
+**Komplettes Nextcloud-Projekt mit MariaDB:**
+```bash
+# 614-615: Namespace vorbereiten
+kubectl create namespace fre-nextcloud
+kubectl config set-context docker-desktop --namespace fre-nextcloud
+
+# 616-617: Secret erstellen
+read -s -p 'passwort: '
+kubectl create secret generic nextcloud \
+  --from-literal MYSQL_ROOT_PASSWORD=$REPLY \
+  --from-literal MYSQL_PASSWORD=$REPLY \
+  --from-literal MYSQL_DATABASE=nextcloud \
+  --from-literal MYSQL_USER=nextcloud \
+  --from-literal MYSQL_HOST=mariadb
+
+# 618-625: MariaDB deployen
+kubectl create deployment mariadb --image docker.io/library/mariadb:10.6
+kubectl set env deployment mariadb --from secret/nextcloud
+oc set volumes deployment mariadb \
+  --add \
+  --name mariadb-data \
+  -t pvc \
+  --claim-name mariadb \
+  --claim-size 5Gi \
+  --claim-mode rwo \
+  --mount-path /var/lib/mysql
+kubectl expose deployment mariadb --port 3306
+
+# 627-632: Nextcloud deployen
+kubectl create deployment nextcloud --image docker.io/library/nextcloud:32.0.2-apache
+kubectl set env deployment nextcloud --from secret/nextcloud
+oc set volumes deployment nextcloud \
+  --add \
+  --name nextcloud-data \
+  -t pvc \
+  --claim-name nextcloud \
+  --claim-size 5Gi \
+  --claim-mode rwm \
+  --mount-path /var/www/html
+kubectl expose deployment nextcloud --port 80
+kubectl create ingress nextcloud --class nginx --rule "nextcloud.myfirst.local/*=nextcloud:80"
+
+# 634: Alle Ressourcen anzeigen
+kubectl get all,pvc,secrets
+
+# 638-643: MariaDB als StatefulSet deployen (Production)
+kubectl get deployments.apps mariadb -o yaml > mariadb-deploy.yaml
+cp mariadb-deploy.yaml mariadb-statefulset.yaml
+vi mariadb-statefulset.yaml
+kubectl delete deployments.apps mariadb
+kubectl create -f mariadb-statefulset.yaml
+```
+
+**Nextcloud Backup erstellen:**
+```bash
+# 656-663: Backup-Pod mit PVC-Mount
+kubectl create deployment testpod --image quay.io/jfreygner/testpod:0.5
+oc set volumes deployment testpod --add --name wurscht --mount-path /data -t pvc --claim-name mariadb-data-mariadb-0
+kubectl exec -it testpod-7bfc6b9649-wf995 -- bash
+# tar czf /tmp/mariadb.tgz /data
+kubectl cp testpod-7bfc6b9649-wf995:/tmp/mariadb.tgz mariadb.tgz
+```
+
+**Nextcloud Restore:**
+```bash
+# 681-684: Restore aus Backup
+kubectl cp mariadb.tgz testpod-c7559bcf8-qqdkr:/tmp/mariadb.tgz
+kubectl exec -it testpod-c7559bcf8-qqdkr -- bash
+# cd /data && tar xzf /tmp/mariadb.tgz
+kubectl delete deployments.apps testpod
+kubectl scale statefulset mariadb --replicas 1
+```
+
+### Phase 14: Kubernetes Dashboard (Befehle 689-707)
+
+**Dashboard mit Helm installieren:**
+```bash
+# 693-695: Helm installieren
+wget https://get.helm.sh/helm-v4.0.0-linux-amd64.tar.gz
+tar xvf helm-v4.0.0-linux-amd64.tar.gz
+sudo cp linux-amd64/helm /usr/local/bin
+
+# 696-697: Tab-Completion
+helm completion bash | sudo tee /etc/bash_completion.d/helm &> /dev/null
+source /etc/bash_completion.d/helm
+
+# 699-700: Dashboard deployen
+helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/
+helm upgrade --install kubernetes-dashboard kubernetes-dashboard/kubernetes-dashboard \
+  --create-namespace --namespace kubernetes-dashboard
+
+# 702: Port-Forwarding starten
+kubectl -n kubernetes-dashboard port-forward svc/kubernetes-dashboard-kong-proxy 8443:443 &
+
+# 705-706: ServiceAccount Berechtigungen und Token
+oc adm policy add-cluster-role-to-user cluster-admin -z kubernetes-dashboard-kong
+kubectl create token kubernetes-dashboard-kong
+# Token im Browser eingeben: https://localhost:8443
+```
+
+### Phase 15: Backup/Restore mit YAML (Befehle 709-748)
+
+**Alle Ressourcen exportieren:**
+```bash
+# 709-711: Alle Ressourcen einer Anwendung exportieren
+kubectl config set-context docker-desktop --namespace fre-myfirst
+kubectl get all,pvc,configmap,ingress
+kubectl get -o yaml cm,deploy,service,ingress,pvc,hpa myhttpd > myhttpd-all.yaml
+
+# 712-715: Namespace löschen und neu erstellen
+kubectl delete namespaces fre-myfirst
+kubectl create namespace fre-myfirst
+kubectl create -f myhttpd-all.yaml
+
+# 717: YAML bereinigen (Status, UIDs, etc. entfernen)
+vi myhttpd-all.yaml
+
+# 720-723: Erneut testen
+kubectl delete namespaces fre-myfirst
+kubectl create namespace fre-myfirst
+kubectl create -f myhttpd-all.yaml
+kubectl get all,pvc
+```
+
+**Templates erstellen (für Wiederverwendung):**
+```bash
+# 749-765: Einzelne Ressourcen in separate Dateien
+mkdir templates
+cd templates/
+kubectl get -o yaml cm myhttpd > myhttpd-cm.yaml
+kubectl get -o yaml pvc myhttpd > myhttpd-pvc.yaml
+# ... weitere Ressourcen
+
+# 761-764: Alle Templates gleichzeitig deployen
+kubectl create namespace fre-mydemo3
+kubectl config set-context docker-desktop --namespace fre-mydemo3
+kubectl create -f .
+```
+
+### Phase 16: Kustomize (Befehle 783-862)
+
+**Kustomize-Struktur erstellen:**
+```bash
+# 783-787: Verzeichnisstruktur
+mkdir -p kustomize/{base,overlays/{test,devel,prod}}
+tree kustomize/
+cp templates/* kustomize/base
+
+# 794-797: Base kustomization.yaml erstellen
+cd kustomize/base/
+ls > kustomization.yaml
+vi kustomization.yaml
+kubectl create -k .  # Erstellt aus allen Dateien in base/
+```
+
+**Overlay für Devel-Umgebung:**
+```bash
+# 799-817: Devel Overlay konfigurieren
+cd ../overlays/devel/
+vi kustomization.yaml
+# resources:
+#   - ../../base
+# namespace: fre-myhttpd-devel
+# patchesStrategicMerge:
+#   - deploy-patch.yaml
+
+# 808-811: Deployment-Patch erstellen
+cp ../../base/myhttpd-deploy.yaml deploy-patch.yaml
+vi deploy-patch.yaml  # Replicas auf 2 ändern
+
+# 820-822: Deployen
+kubectl create namespace fre-myhttpd-devel
+kubectl create -k .
+kubectl get all -n fre-myhttpd-devel
+```
+
+**Overlay für Prod-Umgebung:**
+```bash
+# 827-838: Prod Overlay
+cp devel/* prod/
+cd prod/
+vi deploy-patch.yaml  # Replicas auf 5, Limits erhöhen
+vi kustomization.yaml  # namespace: fre-myhttpd-prod
+kubectl create namespace fre-myhttpd-prod
+kubectl create -k .
+kubectl get all,pvc -n fre-myhttpd-prod
+```
+
+**Kustomize diff und apply:**
+```bash
+# 845-851: Änderungen testen mit diff
+kubectl diff -k .
+vi deploy-patch.yaml  # Änderungen machen
+kubectl diff -k .     # Zeigt Unterschiede
+kubectl apply -k .    # Anwenden
+```
+
+### Phase 17: Helm Package Manager (Befehle 863-943)
+
+**Helm Repository verwenden:**
+```bash
+# 863-873: Bitnami Repo hinzufügen
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo list
+helm search repo mysql
+helm pull bitnami/mysql  # Chart herunterladen
+tar xvf mysql-14.0.3.tgz
+
+# 877-884: Chart installieren
+kubectl create namespace fre-mysql
+kubectl config set-context docker-desktop --namespace fre-mysql
+helm install mydb bitnami/mysql
+kubectl get all
+
+# 884-886: Helm-Historie
+helm list
+helm history mydb
+```
+
+**Eigenen Helm Chart erstellen:**
+```bash
+# 891-903: Chart-Struktur generieren
+helm create myhttpd
+cd myhttpd/templates/
+
+# Eigene YAML-Dateien hinzufügen
+kubectl config set-context docker-desktop --namespace fre-myfirst
+kubectl get deployments.apps myhttpd -o yaml > deployment.yaml
+kubectl get pvc myhttpd -o yaml > pvc.yaml
+kubectl get svc myhttpd -o yaml > service.yaml
+kubectl get ingress myhttpd -o yaml > ingress.yaml
+kubectl get cm myhttpd -o yaml > cm.yaml
+
+# 905-911: YAML-Dateien mit Helm-Templates anpassen
+rm hpa.yaml httproute.yaml serviceaccount.yaml
+code cm.yaml  # {{ .Values.xyz }} verwenden
+# ... weitere Dateien anpassen
+```
+
+**Helm Chart deployen mit values.yaml:**
+```bash
+# 914-926: Chart installieren
+kubectl create namespace fre-myhttpd-helm
+kubectl config set-context docker-desktop --namespace fre-myhttpd-helm
+vi myhttpd/values.yaml  # Werte anpassen
+helm install mysepperl myhttpd/
+helm list
+
+# 920-932: Upgrade mit custom values
+vi values-prod.yaml  # Production-Werte
+helm upgrade -f values-prod.yaml mysepperl myhttpd/
+kubectl get ingress
+```
+
+### Wichtige Erkenntnisse aus dem Workshop
+
+**Best Practices (aus der Praxis):**
+1. ✅ **Tab-Completion** sofort einrichten (Befehl 6-7) → massiv produktiver!
+2. ✅ **Context + Namespace** immer setzen (Befehl 24) → verhindert Fehler
+3. ✅ **Deployments statt Pods** (Befehl 40) → Self-Healing
+4. ✅ **oc Tool** verwenden (Befehl 256-260) → erweiterte Funktionen
+5. ✅ **Metrics Server** früh installieren (Befehl 375) → für HPA notwendig
+6. ✅ **Resource Limits** setzen (Befehl 426) → Cluster-Stabilität
+7. ✅ **Health Probes** konfigurieren (Befehl 537, 549) → Zuverlässigkeit
+8. ✅ **StatefulSets für Datenbanken** (Befehl 366) → Datensicherheit
+9. ✅ **Backup-Strategie** etablieren (Befehl 656-663) → Disaster Recovery
+10. ✅ **Kustomize/Helm** für Wiederverwendung (Befehl 783+, 891+)
+
+**Häufige Fehler (und wie man sie vermeidet):**
+```bash
+# ❌ FALSCH: Pod ohne Restart-Policy
+kubectl run myapp --image nginx
+# → CrashLoopBackOff bei Beendigung
+
+# ✅ RICHTIG: Deployment oder Job verwenden
+kubectl create deployment myapp --image nginx
+kubectl create job myapp --image nginx
+
+# ❌ FALSCH: ConfigMap mounten überschreibt ganzes Verzeichnis
+oc set volumes ... --mount-path /etc/httpd/conf
+# → Alle anderen Dateien in /etc/httpd/conf verschwinden!
+
+# ✅ RICHTIG: sub-path verwenden
+oc set volumes ... --mount-path /etc/httpd/conf/httpd.conf --sub-path httpd.conf
+
+# ❌ FALSCH: PVC löschen mit Reclaim Policy "Delete"
+kubectl delete pvc mydata
+# → Alle Daten verloren!
+
+# ✅ RICHTIG: Erst Reclaim Policy auf "Retain" ändern
+kubectl edit pv pvc-xxx  # persistentVolumeReclaimPolicy: Retain
+```
+
+**Nützliche Alias (aus der History):**
+```bash
+# Häufig verwendete Befehle verkürzen
+alias k='kubectl'
+alias kg='kubectl get'
+alias kgp='kubectl get pods'
+alias kgn='kubectl get nodes'
+alias kd='kubectl describe'
+alias kl='kubectl logs'
+alias ke='kubectl exec -it'
+alias kccc='kubectl config current-context'
+alias kcgc='kubectl config get-contexts'
+```
+
+---
+
+## 19. Best Practices
 
 ### 1. Namespaces für Organisation
 
